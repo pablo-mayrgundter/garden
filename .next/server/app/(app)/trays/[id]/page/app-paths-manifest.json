@@ -1,0 +1,3 @@
+{
+  "/(app)/trays/[id]/page": "app/(app)/trays/[id]/page.js"
+}

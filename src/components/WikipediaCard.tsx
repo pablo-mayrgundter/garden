@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useState } from "react";
 
 type Summary = { extract: string; thumbnail?: { source: string }; content_urls?: { desktop?: { page: string } } };
@@ -25,7 +23,6 @@ export function WikipediaCard({ title }: { title: string }) {
     <div className="stack" style={{ gap: 8 }}>
       {summary ? (
         <div className="wiki">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           {summary.thumbnail && <img src={summary.thumbnail.source} alt="" />}
           <p className="small" style={{ margin: 0 }}>{summary.extract.length > 420 ? `${summary.extract.slice(0, 420)}…` : summary.extract}</p>
         </div>

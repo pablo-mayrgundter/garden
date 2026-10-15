@@ -1,0 +1,17 @@
+{
+  "/(app)/page": "/",
+  "/(app)/plantings/[id]/page": "/plantings/[id]",
+  "/(app)/plants/[id]/page": "/plants/[id]",
+  "/(app)/plants/new/page": "/plants/new",
+  "/(app)/plants/page": "/plants",
+  "/(app)/settings/page": "/settings",
+  "/(app)/trays/[id]/page": "/trays/[id]",
+  "/(app)/trays/page": "/trays",
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/api/assistant/route": "/api/assistant",
+  "/api/photos/[id]/route": "/api/photos/[id]",
+  "/join/page": "/join",
+  "/login/page": "/login",
+  "/signup/page": "/signup"
+}

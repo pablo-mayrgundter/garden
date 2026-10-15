@@ -1,23 +1,19 @@
-"use client";
-
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { NavLink } from "react-router";
 
 const LINKS = [
-  { href: "/", label: "Today", match: (p: string) => p === "/" },
-  { href: "/trays", label: "Planters", match: (p: string) => p.startsWith("/trays") || p.startsWith("/plantings") },
-  { href: "/plants", label: "Seed library", match: (p: string) => p.startsWith("/plants") },
-  { href: "/settings", label: "Settings", match: (p: string) => p.startsWith("/settings") },
+  { to: "/", label: "Today", end: true },
+  { to: "/trays", label: "Planters" },
+  { to: "/plants", label: "Seed library" },
+  { to: "/settings", label: "Settings" },
 ];
 
 export function Nav() {
-  const pathname = usePathname();
   return (
     <nav className="nav">
       {LINKS.map((l) => (
-        <Link key={l.href} href={l.href} className={l.match(pathname) ? "active" : ""}>
+        <NavLink key={l.to} to={l.to} end={l.end} className={({ isActive }) => (isActive ? "active" : "")}>
           {l.label}
-        </Link>
+        </NavLink>
       ))}
     </nav>
   );

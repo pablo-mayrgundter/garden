@@ -1,6 +1,6 @@
 """Crop per-plant images out of the original garden photos in seed/photos.
 
-Produces seed/images/<slug>-front.webp, <slug>-back.webp and cell-<label>.webp,
+Produces public/seed/<slug>-front.webp, <slug>-back.webp and cell-<label>.webp,
 which the app's first-run seed attaches to each species and planting.
 
 Usage: python3 scripts/crop_seed_images.py   (needs Pillow)
@@ -11,7 +11,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 PHOTOS = ROOT / "seed" / "photos"
-OUT = ROOT / "seed" / "images"
+OUT = ROOT / "public" / "seed"
 
 # (left, top, right, bottom) boxes in the 1256x1674 originals.
 PACKET_FRONTS = {

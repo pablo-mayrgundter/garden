@@ -1,0 +1,17 @@
+{
+  "/(app)/page": "app/(app)/page.js",
+  "/(app)/plantings/[id]/page": "app/(app)/plantings/[id]/page.js",
+  "/(app)/plants/[id]/page": "app/(app)/plants/[id]/page.js",
+  "/(app)/plants/new/page": "app/(app)/plants/new/page.js",
+  "/(app)/plants/page": "app/(app)/plants/page.js",
+  "/(app)/settings/page": "app/(app)/settings/page.js",
+  "/(app)/trays/[id]/page": "app/(app)/trays/[id]/page.js",
+  "/(app)/trays/page": "app/(app)/trays/page.js",
+  "/_global-error/page": "app/_global-error/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/assistant/route": "app/api/assistant/route.js",
+  "/api/photos/[id]/route": "app/api/photos/[id]/route.js",
+  "/join/page": "app/join/page.js",
+  "/login/page": "app/login/page.js",
+  "/signup/page": "app/signup/page.js"
+}

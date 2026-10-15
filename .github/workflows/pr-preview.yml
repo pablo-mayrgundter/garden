@@ -1,0 +1,56 @@
+name: PR preview
+
+# Deploys a live preview of every PR to
+# https://<owner>.github.io/<repo>/pr-preview/pr-<N>/
+# and removes it when the PR closes. Previews live on the gh-pages branch under
+# pr-preview/, next to the main deploy at the root (pages.yml).
+# Each preview has its own origin path, so its browser storage is separate from
+# the main site's: a fresh garden every time, nothing shared with production.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - closed
+
+concurrency:
+  group: pr-preview-${{ github.event.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/build
+        with:
+          base-path: /${{ github.event.repository.name }}/pr-preview/pr-${{ github.event.number }}/
+
+      - name: Deploy preview
+        uses: rossjrw/pr-preview-action@v1.8.1
+        with:
+          source-dir: dist
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
+          action: deploy
+
+  cleanup:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove preview
+        uses: rossjrw/pr-preview-action@v1.8.1
+        with:
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
+          action: remove
