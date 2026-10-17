@@ -1,4 +1,4 @@
-import type { EventType, Milestone, PlantingStatus } from "./seed-data.ts";
+import type { EventType, Milestone, PlantingStatus } from "./model.ts";
 
 // Everything the app stores. Ids are short random strings so records from
 // different devices can later be merged by a sync backend without collisions.
@@ -126,7 +126,9 @@ export type GardenData = {
 export type ChatRecord = {
   seq?: number;
   threadId: string;
-  role: "user" | "assistant";
+  /** Which assistant the conversation belongs to; older records are Claude's. */
+  provider?: "claude" | "ollama";
+  role: "user" | "assistant" | "tool";
   /** Exactly what was sent/received, except garden photos stored as {type: "garden_photo", photo_id}. */
   content: unknown[];
   display: { text?: string; tools?: string[] } | null;

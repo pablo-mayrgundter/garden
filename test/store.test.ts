@@ -1,71 +1,178 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addPhoto, deletePlanting, logCare, type ActionCtx } from "../src/lib/actions.ts";
+import { addPhoto, applyTrayLayout, deletePlanting, deleteTray, logCare, trayMarkdown, type ActionCtx } from "../src/lib/actions.ts";
 import { plantingViews } from "../src/lib/garden.ts";
-import { exportBackup, getPhotoBlob, importBackup, loadAll, openGardenDb } from "../src/lib/store.ts";
+import {
+  appendChat,
+  createGarden,
+  currentThreadId,
+  exportBackup,
+  getPhotoBlob,
+  importBackup,
+  loadAll,
+  loadChat,
+  migrateBundledPhotos,
+  openGardenDb,
 
+  type GardenDB,
+} from "../src/lib/store.ts";
+import type { GardenData } from "../src/lib/types.ts";
+
+const TODAY = "2026-10-17";
 let n = 0;
 const fresh = () => openGardenDb(`test-${n++}`);
-const ctxFor = async (db: Awaited<ReturnType<typeof fresh>>): Promise<ActionCtx> => ({ db, data: await loadAll(db), by: "Pablo", today: "2026-10-15" });
+const load = async (db: GardenDB): Promise<GardenData> => (await loadAll(db))!;
+const ctxFor = async (db: GardenDB): Promise<ActionCtx> => ({ db, data: await load(db), by: "Pablo", today: TODAY });
 
-test("first open seeds the garden from the plan", async () => {
-  const data = await loadAll(await fresh());
-  assert.equal(data.garden.name, "Herb Garden");
-  assert.equal(data.trays.length, 2);
-  assert.equal(data.plantings.length, 14);
-  assert.equal(data.species.length, 15);
-  const lavender = data.plantings.find((p) => p.speciesId === "lavender")!;
-  assert.deepEqual(lavender.cells, ["1C", "2C"]);
-  assert.equal(data.plantings.find((p) => p.speciesId === "mint")!.status, "planned");
-  assert.ok(data.photos.some((p) => p.plantingId === "seed-tray-4D" && p.src === "seed/cell-4D.webp"));
+const TRAY = `# Seed tray
+
+16-cell seed tray
+
+|   | 1        | 2     | 3    | 4     |
+|---|----------|-------|------|-------|
+| A | Rosemary | Thyme | Dill | Basil |
+| B |          |       |      |       |
+| C | Lavender | Lavender |   |       |
+`;
+
+async function gardenWithTray() {
+  const db = await fresh();
+  await createGarden(db, { name: "Test garden", timezone: "UTC", gardener: "Pablo" });
+  const r = await applyTrayLayout(await ctxFor(db), null, TRAY);
+  const data = await load(db);
+  const byName = (name: string) => data.plantings.find((p) => data.species.find((s) => s.id === p.speciesId)?.commonName === name)!;
+  return { db, trayId: r.trayId, result: r, byName };
+}
+
+test("a new browser has no garden; nothing ships with the app", async () => {
+  const db = await fresh();
+  assert.equal(await loadAll(db), null);
+  await createGarden(db, { name: "Mine", timezone: "UTC", gardener: "Sam" });
+  const data = await load(db);
+  assert.equal(data.garden.name, "Mine");
+  assert.deepEqual(data.garden.gardeners, ["Sam"]);
+  assert.equal(data.species.length + data.trays.length + data.plantings.length + data.photos.length, 0);
 });
 
-test("reopening doesn't re-seed", async () => {
-  const name = `test-${n++}`;
-  const db = await openGardenDb(name);
-  await logCare(await ctxFor(db), { plantingIds: ["seed-tray-1A"], type: "watered" });
-  db.close();
-  const again = await loadAll(await openGardenDb(name));
-  assert.equal(again.plantings.length, 14);
-  assert.equal(again.events.filter((e) => e.type === "watered").length, 1);
+test("a markdown layout creates the planter, plants and planned plantings", async () => {
+  const { db, result, byName } = await gardenWithTray();
+  const data = await load(db);
+  assert.equal(data.trays[0].name, "Seed tray");
+  assert.equal(data.trays[0].kind, "16-cell seed tray");
+  assert.deepEqual(data.trays[0].rows, ["A", "B", "C"]);
+  assert.equal(result.added, 5);
+  assert.deepEqual(result.newPlants.sort(), ["Basil", "Dill", "Lavender", "Rosemary", "Thyme"]);
+  assert.deepEqual(byName("Lavender").cells, ["1C", "2C"]);
+  assert.equal(byName("Basil").status, "planned");
+});
+
+test("re-applying a layout keeps, moves, removes and detaches plantings", async () => {
+  const { db, trayId, byName } = await gardenWithTray();
+  const thyme = byName("Thyme");
+  const dill = byName("Dill");
+  const basil = byName("Basil");
+  await logCare(await ctxFor(db), { plantingIds: [dill.id], type: "watered" });
+  const edited = TRAY.replace("| A | Rosemary | Thyme    | Dill | Basil |", "| A | Rosemary |          |      |       |")
+    .replace("| A | Rosemary | Thyme | Dill | Basil |", "| A | Rosemary |  |  |  |")
+    .replace("| B |          |       |      |       |", "| B | Thyme | Basil | Mint |  |");
+  const r = await applyTrayLayout(await ctxFor(db), trayId, edited);
+  const data = await load(db);
+  assert.equal(r.kept, 2, "rosemary and lavender unchanged");
+  assert.equal(r.added, 3, "thyme and basil moved rows, so they're new plantings; mint is new");
+  assert.equal(r.removed, 2, "old thyme and basil had no history");
+  assert.equal(r.detached, 1, "dill has a care log, so it's kept outside the planter");
+  assert.ok(!data.plantings.some((p) => p.id === thyme.id || p.id === basil.id));
+  const keptDill = data.plantings.find((p) => p.id === dill.id)!;
+  assert.equal(keptDill.trayId, null);
+  assert.match(keptDill.location!, /Was in Seed tray 3A/);
+  assert.ok(data.species.some((s) => s.commonName === "Mint"));
+  // The markdown written back out round-trips.
+  assert.match(trayMarkdown(data, trayId), /\| B +\| Thyme +\| Basil +\| Mint +\| +\|/);
+});
+
+test("moving a planting within its row keeps its history", async () => {
+  const { db, trayId, byName } = await gardenWithTray();
+  const basil = byName("Basil");
+  await logCare(await ctxFor(db), { plantingIds: [basil.id], type: "sprouted" });
+  const r = await applyTrayLayout(await ctxFor(db), trayId, TRAY.replace("| A | Rosemary | Thyme | Dill | Basil |", "| A | Rosemary | Thyme | Dill | Basil |").replace("| B |          |       |      |       |", "| B |  |  |  | Basil |").replace("| A | Rosemary | Thyme | Dill | Basil |", "| A | Rosemary | Thyme | Dill |  |"));
+  const moved = (await load(db)).plantings.find((p) => p.id === basil.id)!;
+  assert.equal(r.moved, 0, "different row and no overlap means a new planting");
+  assert.equal(moved.trayId, null, "old basil had history, so it's kept outside");
+});
+
+test("bad markdown explains what's wrong", async () => {
+  const db = await fresh();
+  await createGarden(db, { name: "x", timezone: "UTC", gardener: null });
+  await assert.rejects(applyTrayLayout(await ctxFor(db), null, "| | 1 |\n|---|---|\n| A | Basil |"), /heading/);
+  await assert.rejects(applyTrayLayout(await ctxFor(db), null, "# T\n\n| | 1 | 3 |\n|---|---|---|\n| A | Basil | |"), /number the columns/);
 });
 
 test("logging sprouts advances status and the schedule", async () => {
-  const db = await fresh();
-  await logCare(await ctxFor(db), { plantingIds: ["seed-tray-3A"], type: "sprouted", date: "2026-10-15" });
-  const data = await loadAll(db);
-  const dill = plantingViews(data, "2026-10-15").find((p) => p.id === "seed-tray-3A")!;
-  assert.equal(dill.status, "sprouted");
-  assert.equal(dill.care.find((c) => c.key === "sprout")!.status, "done");
-  assert.equal(data.events.find((e) => e.plantingId === "seed-tray-3A" && e.type === "sprouted")?.by, "Pablo");
+  const { db, byName } = await gardenWithTray();
+  const dill = byName("Dill");
+  await logCare(await ctxFor(db), { plantingIds: [dill.id], type: "sprouted", date: TODAY });
+  const view = plantingViews(await load(db), TODAY).find((p) => p.id === dill.id)!;
+  assert.equal(view.status, "sprouted");
 });
 
-test("deleting a planting removes its log, notes and photos", async () => {
-  const db = await fresh();
-  await deletePlanting(await ctxFor(db), "seed-tray-4D");
-  const data = await loadAll(db);
-  assert.ok(!data.plantings.some((p) => p.id === "seed-tray-4D"));
-  assert.ok(!data.events.some((e) => e.plantingId === "seed-tray-4D"));
-  assert.ok(!data.notes.some((x) => x.plantingId === "seed-tray-4D"));
-  assert.ok(!data.photos.some((x) => x.plantingId === "seed-tray-4D"));
+test("deleting a planting or a planter cleans up", async () => {
+  const { db, trayId, byName } = await gardenWithTray();
+  const basil = byName("Basil");
+  await deletePlanting(await ctxFor(db), basil.id);
+  assert.ok(!(await load(db)).plantings.some((p) => p.id === basil.id));
+  await logCare(await ctxFor(db), { plantingIds: [byName("Thyme").id], type: "watered" });
+  await deleteTray(await ctxFor(db), trayId);
+  const data = await load(db);
+  assert.equal(data.trays.length, 0);
+  assert.deepEqual(data.plantings.map((p) => p.trayId), [null], "only thyme (with history) survives, outside any planter");
 });
 
-test("backup round-trips records and uploaded photos", async () => {
-  const src = await fresh();
+test("photos from the first version are copied into the browser", async () => {
+  const db = await fresh();
+  await createGarden(db, { name: "x", timezone: "UTC", gardener: null });
+  await (await import("../src/lib/store.ts")).putRecords(db, "photos", [
+    { id: "p1", plantingId: null, speciesId: null, trayId: null, kind: "progress", caption: null, takenAt: TODAY, mime: "image/webp", src: "seed/cell-1A.webp", by: null, createdAt: TODAY },
+  ]);
+  assert.equal(await migrateBundledPhotos(db, async () => null), 0, "unreachable files are retried later");
+  assert.equal(await migrateBundledPhotos(db, async (src) => new Blob([src], { type: "image/webp" })), 1);
+  const [photo] = (await load(db)).photos;
+  assert.equal(photo.src, null);
+  assert.equal(await (await getPhotoBlob(db, "p1"))!.text(), "seed/cell-1A.webp");
+});
+
+test("a garden file round-trips records, photos and chats", async () => {
+  const { db: src, byName } = await gardenWithTray();
   const ctx = await ctxFor(src);
-  await logCare(ctx, { plantingIds: ["seed-tray-2A"], type: "thinned", note: "kept 3" });
-  await addPhoto(ctx, { plantingId: "seed-tray-2A", speciesId: null, trayId: null, kind: "progress", caption: "day 10", takenAt: "2026-10-15" }, new Blob([new Uint8Array([1, 2, 3, 250])], { type: "image/jpeg" }));
+  await logCare(ctx, { plantingIds: [byName("Thyme").id], type: "thinned", note: "kept 3" });
+  await addPhoto(ctx, { plantingId: byName("Thyme").id, speciesId: null, trayId: null, kind: "progress", caption: "day 10", takenAt: TODAY }, new Blob([new Uint8Array([1, 2, 3, 250])], { type: "image/jpeg" }));
+  const thread = await currentThreadId(src, "ollama");
+  await appendChat(src, { threadId: thread, provider: "ollama", role: "user", content: [{ role: "user", content: "hi" }], display: { text: "hi" }, createdAt: TODAY });
   const backup = JSON.parse(JSON.stringify(await exportBackup(src)));
+  assert.equal(backup.version, 2);
 
   const dst = await fresh();
-  await logCare(await ctxFor(dst), { plantingIds: ["seed-tray-1A"], type: "watered" });
+  await createGarden(dst, { name: "Other", timezone: "UTC", gardener: null });
   await importBackup(dst, backup);
-  const data = await loadAll(dst);
+  const data = await load(dst);
+  assert.equal(data.garden.name, "Test garden");
   assert.ok(data.events.some((e) => e.type === "thinned" && e.note === "kept 3"));
-  assert.ok(!data.events.some((e) => e.type === "watered"), "import replaces local data");
   const uploaded = data.photos.find((p) => p.caption === "day 10")!;
-  const blob = await getPhotoBlob(dst, uploaded.id);
-  assert.deepEqual([...new Uint8Array(await blob!.arrayBuffer())], [1, 2, 3, 250]);
-  await assert.rejects(importBackup(dst, { nope: true } as never), /isn't a Herb Garden backup/);
+  assert.deepEqual([...new Uint8Array(await (await getPhotoBlob(dst, uploaded.id))!.arrayBuffer())], [1, 2, 3, 250]);
+  assert.equal(await currentThreadId(dst, "ollama"), thread);
+  assert.equal((await loadChat(dst, thread))[0].display?.text, "hi");
+  await assert.rejects(importBackup(dst, { nope: true } as never), /isn't a Herb Garden file/);
+});
+
+test("version 1 garden files still import", async () => {
+  const db = await fresh();
+  const v1 = {
+    app: "herb-garden",
+    version: 1,
+    exportedAt: TODAY,
+    data: { garden: { id: "garden", name: "Old", timezone: "UTC", gardeners: [], createdAt: TODAY }, species: [], trays: [], plantings: [], events: [], notes: [], photos: [], tasks: [] },
+    photoBlobs: {},
+  };
+  await importBackup(db, v1 as never);
+  assert.equal((await load(db)).garden.name, "Old");
 });

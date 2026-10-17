@@ -1,5 +1,6 @@
 import { Link, useParams, useSearchParams } from "react-router";
 import { NoteForm, PhotoUpload, PlantCellsForm } from "@/components/forms";
+import { TrayLayoutEditor } from "@/components/TrayLayoutEditor";
 import { ActionButton, CareChip, Photo, TrayGrid } from "@/components/ui";
 import { logCare } from "@/lib/actions";
 import { formatDate } from "@/lib/dates";
@@ -18,7 +19,13 @@ export function TraysPage() {
           <h1>Planters</h1>
           <p className="sub">Tap a cell to see that plant, or an empty cell to plant it.</p>
         </div>
+        <Link to="/trays/new" className="btn btn-primary">+ Add a planter</Link>
       </div>
+      {data.trays.length === 0 && (
+        <section className="card">
+          <p className="empty" style={{ margin: 0 }}>No planters yet. Add one by describing it as a small table — rows are letters, columns are numbers.</p>
+        </section>
+      )}
       <div className="grid cols-2">
         {sortedTrays(data).map((t) => {
           const inTray = plantings.filter((p) => p.trayId === t.id);
@@ -64,7 +71,7 @@ export function TrayPage() {
         <div>
           <p className="sub"><Link to="/trays">Planters</Link> /</p>
           <h1>{tray.name}</h1>
-          <p className="sub">{tray.kind} · {tray.notes}</p>
+          <p className="sub">{[tray.kind, tray.notes].filter(Boolean).join(" · ")}</p>
         </div>
         {active.length > 0 && (
           <ActionButton className="primary" onClick={() => act((ctx) => logCare(ctx, { plantingIds: active.map((p) => p.id), type: "watered" }))}>
@@ -134,11 +141,34 @@ export function TrayPage() {
             <PhotoUpload trayId={tray.id} kind="tray" today={today} />
           </section>
           <section className="card">
+            <details>
+              <summary>Edit layout as a table</summary>
+              <TrayLayoutEditor key={tray.id} trayId={tray.id} />
+            </details>
+          </section>
+          <section className="card">
             <h3>Note for the whole garden</h3>
             <NoteForm />
           </section>
         </div>
       </div>
+    </>
+  );
+}
+
+export function NewTrayPage() {
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <p className="sub"><Link to="/trays">Planters</Link> /</p>
+          <h1>Add a planter</h1>
+          <p className="sub">Describe it as markdown: a heading with its name, a line about what it is, and a table of its cells.</p>
+        </div>
+      </div>
+      <section className="card">
+        <TrayLayoutEditor />
+      </section>
     </>
   );
 }

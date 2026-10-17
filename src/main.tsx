@@ -9,7 +9,8 @@ import { NewPlantPage, PlantPage, PlantsPage } from "./pages/Plants";
 import { PlantingPage } from "./pages/Planting";
 import { SettingsPage } from "./pages/Settings";
 import { Today } from "./pages/Today";
-import { TrayPage, TraysPage } from "./pages/Trays";
+import { NewTrayPage, TrayPage, TraysPage } from "./pages/Trays";
+import { CalendarPage } from "./pages/Calendar";
 import "./styles.css";
 
 function Layout() {
@@ -67,7 +68,9 @@ const router = createHashRouter([
     children: [
       { path: "/", element: <Today /> },
       { path: "/trays", element: <TraysPage /> },
+      { path: "/trays/new", element: <NewTrayPage /> },
       { path: "/trays/:id", element: <TrayPage /> },
+      { path: "/calendar", element: <CalendarPage /> },
       { path: "/plantings/:id", element: <PlantingPage /> },
       { path: "/plants", element: <PlantsPage /> },
       { path: "/plants/new", element: <NewPlantPage /> },

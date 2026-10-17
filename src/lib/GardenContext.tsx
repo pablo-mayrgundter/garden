@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ActionCtx } from "./actions.ts";
 import { todayIn } from "./dates.ts";
-import { getPhotoBlob, loadAll, openGardenDb, type GardenDB } from "./store.ts";
+import { createGarden, getPhotoBlob, importBackup, loadAll, migrateBundledPhotos, openGardenDb, type Backup, type GardenDB } from "./store.ts";
 import type { GardenData, Photo } from "./types.ts";
 
 const GARDENER_KEY = "garden.gardener";
@@ -37,11 +37,20 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
   const [gardener, setGardenerState] = useState<string | null>(readGardener);
   const [, setTick] = useState(0);
 
+  const [loaded, setLoaded] = useState(false);
+
   useEffect(() => {
     openGardenDb()
       .then(async (d) => {
+        // Gardens from the first version referenced photos bundled with the site; copy them into this browser.
+        const moved = await migrateBundledPhotos(d, async (src) => {
+          const res = await fetch(staticUrl(src));
+          return res.ok ? res.blob() : null;
+        });
+        if (moved) console.info(`Copied ${moved} photos into this browser's storage.`);
         setDb(d);
         setData(await loadAll(d));
+        setLoaded(true);
       })
       .catch((e) => setError(String(e?.message ?? e)));
     // Re-render every few minutes so "today" rolls over at midnight.
@@ -97,8 +106,72 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
         </div>
       </main>
     );
-  if (!value) return <p className="empty" style={{ padding: 24 }}>Opening the garden…</p>;
+  if (!loaded || !db) return <p className="empty" style={{ padding: 24 }}>Opening the garden…</p>;
+  if (!value) return <Welcome db={db} onReady={reload} setGardener={setGardener} />;
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+/** First visit in this browser: start an empty garden, or bring one in from a garden file. */
+function Welcome({ db, onReady, setGardener }: { db: GardenDB; onReady: () => Promise<void>; setGardener: (n: string | null) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const file = useRef<HTMLInputElement>(null);
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      await onReady();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <main className="auth-wrap">
+      <div className="card auth-card">
+        <div className="auth-hero">
+          <div className="emoji">🌱</div>
+          <h1>Start a garden</h1>
+          <p className="muted">Everything you add stays in this browser on this device. Nothing is uploaded.</p>
+        </div>
+        <form
+          className="form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            const name = String(fd.get("name") ?? "").trim() || "My garden";
+            const you = String(fd.get("you") ?? "").trim() || null;
+            run(async () => {
+              await createGarden(db, { name, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", gardener: you });
+              setGardener(you);
+            });
+          }}
+        >
+          <label>Garden name<input name="name" placeholder="e.g. Herb Garden" /></label>
+          <label>Your name<input name="you" placeholder="Signs what you log" /></label>
+          <button className="primary" disabled={busy}>Start an empty garden</button>
+        </form>
+        <div className="stack" style={{ gap: 8, marginTop: 18, textAlign: "center" }}>
+          <span className="small muted">or, if you have a garden file from another device or a backup</span>
+          <button type="button" disabled={busy} onClick={() => file.current?.click()}>⬆️ Open a garden file…</button>
+          <input
+            ref={file}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) run(async () => importBackup(db, JSON.parse(await f.text()) as Backup));
+            }}
+          />
+        </div>
+        {error && <p className="error" style={{ marginTop: 12 }}>{error}</p>}
+      </div>
+    </main>
+  );
 }
 
 export function useGarden(): GardenState {

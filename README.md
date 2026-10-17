@@ -1,54 +1,70 @@
 # 🌿 Herb Garden
 
-A small app for tracking our herb garden: what's planted in each cell, when to water, thin, feed, transplant and harvest, plus notes, photos and an AI garden assistant.
+A small app for tracking a garden: what's planted in each cell, when to water, thin, feed, transplant and harvest, plus notes, photos, a calendar and an AI garden assistant.
 
-It's a static site (Vite + React) hosted on GitHub Pages. Everything you enter is stored **in your browser on your device** (IndexedDB); nothing is uploaded anywhere.
-
-On first open, the app sets up the garden from our handwritten plan and seed packets (`seed/photos/`):
-
-| Seed tray | 1 | 2 | 3 | 4 |
-|---|---|---|---|---|
-| **A** | Rosemary | Thyme | Dill | Basil |
-| **B** | Oregano | Cilantro | Parsley | Sage *(instead of marjoram)* |
-| **C** | Lavender (1–2C) | | Mint (3–4C, seeds coming) | |
-| **D** | Cauliflower | Broccoli | Bunching onion | Lettuce |
-
-The **egg carton** (3 × 6 cups) starts empty, ready for the next planting. Aloe is in the seed library but not planted.
+It's a static site (Vite + React) hosted on GitHub Pages. **No garden data ships with the app.** Every garden lives only in the browser that created it (IndexedDB). It starts empty or from a garden file, and you can download it as a file at any time.
 
 ## Features
 
-- **Today**: everything that needs doing, grouped so one tap waters a whole tray, plus what's coming up in the next two weeks and your own reminders.
-- **Care schedule per plant**: built from each packet's back: daily misting while seedlings are in the tray, the germination window, then thinning, first feeding, pinching, potting up, transplanting and harvest windows. Logging the matching event ("thinned", "transplanted", …) checks a step off.
-- **Planters**: a picture of each tray laid out cell by cell, using our own photos. Tap an empty cell to plant it.
-- **Plant pages**: hero photo, care log, notes, photo gallery (photos are shrunk on the phone before saving), packet front and back, packet facts, and a summary from Wikipedia with a link to the full article.
-- **Seed library**: one entry per packet. Edit it, or add new ones (mint is a placeholder until the packet arrives).
-- **Garden assistant**: a chat panel on every page. It knows which page you're on and gets that plant's packet data, schedule, care log, notes and latest photo, plus an overview of the whole garden. It can log care ("we misted the tray"), save notes, set reminders, fix sow dates, and look at any photo. Anything it records is marked "via assistant" and can be deleted.
-- **Gardeners**: on first open you pick who's gardening on that device. Your name goes on everything you log.
-- **Backups**: Settings → *Download backup* saves the whole garden, photos included, as one file. *Restore from backup* loads it on another device, or back onto the same one.
+- **Today**: everything that needs doing, grouped so one tap waters a whole planter, plus what's coming up in the next two weeks and your own reminders.
+- **Calendar**: a month view with one short line per entry: what was done (care log, sowings), what's planned (schedule steps), what's overdue, and reminders. Tap a day for the full list.
+- **Planters**: each one is drawn cell by cell from a small markdown table (rows are letters, columns are numbers, each cell names a plant). See below.
+- **Care schedule per plant**: built from the packet info in the seed library: daily misting while seedlings are in a planter, the germination window, then thinning, first feeding, pinching, potting up, transplanting and harvest windows. Logging the matching event checks a step off.
+- **Plant pages**: care log, notes, photo gallery (shrunk on the device before saving), packet photos and facts, and a Wikipedia summary with a link to the full article.
+- **Garden assistant**: a chat panel on every page that knows which page you're on. It can log care, save notes, set reminders, fix sow dates, rewrite planter layouts and look at photos. Run it with **Claude** (your API key) or a **local model through Ollama**.
+- **Garden file**: Settings → *Download garden file* saves everything, including photos and assistant chats, as one JSON file. *Open a garden file* loads it on another device or another copy of the app. It also works from the first-visit screen.
 
-> **Sow date:** we didn't write down the date we sowed the seed tray. The app guesses **Oct 5, 2026** from how far along the seedlings were in the Oct 14 photo, and marks the date as an estimate. Fix it on any planting page, or tell the assistant.
+### Planters as markdown
 
-### About local storage
+```markdown
+# Seed tray
 
-- Each browser on each device has its **own copy** of the garden. Two people on two phones won't see each other's entries automatically. For now, share by sending a backup file and restoring it.
-- Clearing the browser's site data deletes the garden, so download a backup now and then.
-- PR previews run at a different URL from the main site, so each preview starts with a fresh garden and never touches the real one.
-- The assistant calls Claude directly from the browser using an Anthropic API key you paste into Settings. The key is stored only on that device and isn't included in backups.
+16-cell seed tray with humidity dome
 
-A server-side backup and sync is planned for later. All changes already go through one place (`src/lib/actions.ts`, then `src/lib/store.ts`), and records use random string ids, so a sync backend can be added without changing the pages.
+|   | 1           | 2        | 3              | 4       |
+|---|-------------|----------|----------------|---------|
+| A | Rosemary    | Thyme    | Dill           | Basil   |
+| B | Oregano     | Cilantro | Parsley        | Sage    |
+| C | Lavender    | Lavender | Mint           | Mint    |
+| D | Cauliflower | Broccoli | Bunching Onion | Lettuce |
+```
 
-## GitHub Pages setup (one time)
+- The `#` heading is the planter's name, and the next line describes it.
+- The same name in neighboring cells of a row is one planting spanning them (lavender in 1–2C).
+- Leave a cell blank (or `-`) when it's empty.
+- Names are matched against the seed library, and unknown names are added to it.
 
-1. **Settings → Actions → General → Workflow permissions**: choose *Read and write permissions*. The deploy workflows push to the `gh-pages` branch, and the preview workflow comments on PRs.
-2. Get a first deploy onto `gh-pages`, either by merging to `main` or by running **Actions → Deploy to GitHub Pages → Run workflow**. Any PR also creates the branch through its preview.
-3. **Settings → Pages → Build and deployment**: set *Source* to **Deploy from a branch**, branch **`gh-pages`**, folder **`/ (root)`**, then save.
-4. The site is served at **https://pablo-mayrgundter.github.io/garden/**, and each PR at **…/garden/pr-preview/pr-N/**. The preview action posts a comment on the PR with the link and removes the preview when the PR closes.
+On a planter's page, *Edit layout as a table* shows the current layout in this format. When you save it, the app works out what changed:
 
-Workflows (same setup as our other projects):
+- Plantings that are still there are kept.
+- Plantings that shifted within their row are moved, with their history.
+- New ones are added as *planned*.
+- Removed ones are deleted if they have no history. If they do have care-log entries, notes or photos, they're kept outside the planter.
 
-- `.github/workflows/pages.yml`: on push to `main`, builds and publishes to the root of `gh-pages`, keeping `pr-preview/`.
-- `.github/workflows/pr-preview.yml`: on each PR, builds with the preview base path and deploys with [`rossjrw/pr-preview-action`](https://github.com/rossjrw/pr-preview-action).
-- `.github/actions/build`: shared install → test → build step.
+### Using a local model (Ollama)
+
+The browser talks to Ollama directly, so no extra server is needed.
+
+1. Allow this site's address in Ollama, then start it:
+   ```bash
+   OLLAMA_ORIGINS="https://pablo-mayrgundter.github.io" ollama serve
+   # Mac app instead: launchctl setenv OLLAMA_ORIGINS "https://pablo-mayrgundter.github.io", then restart Ollama
+   ollama pull gemma4:12b
+   ```
+2. In **Settings → Garden assistant**, choose *Local model (Ollama)*. The server defaults to `http://localhost:11434` and the model to `gemma4:12b`. Press *Test connection*.
+3. Use Chrome, Edge or Firefox on the same computer as Ollama. Chrome may ask to let the site reach your local network; allow it. Safari won't let a secure site call `http://localhost`; there, run the app locally with `npm run dev`.
+
+The app asks Ollama for a 16k-token context and sends a shorter history than it does to Claude. If the model can't call tools, the app falls back to plain chat and says so.
+
+A phone can't reach `localhost` on your computer. Using a local model from a phone would need the Ollama server exposed over HTTPS (for example with `tailscale serve`), with that address entered in Settings.
+
+## GitHub Pages and PR previews
+
+- `.github/workflows/pages.yml`: on push to `main`, builds and publishes to the root of the `gh-pages` branch, keeping `pr-preview/`.
+- `.github/workflows/pr-preview.yml`: builds each PR into `…/garden/pr-preview/pr-N/` with [`rossjrw/pr-preview-action`](https://github.com/rossjrw/pr-preview-action) and removes it when the PR closes.
+- `.github/actions/build`: the shared install → test → build step.
+
+Each preview runs at its own address, so it has its own browser storage: it starts empty and never touches the real garden.
 
 ## Development
 
@@ -56,14 +72,15 @@ Requires Node ≥ 22.18.
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173
-npm test             # schedule + storage tests (node:test, fake-indexeddb)
-npm run build        # typecheck + static build into dist/ (set BASE_PATH=/garden/ to mimic Pages)
-npm run crop-images  # re-crop public/seed/* from the original photos (needs Python + Pillow)
+npm run dev     # http://localhost:5173
+npm test        # schedule, storage, planter markdown and calendar tests (node:test, fake-indexeddb)
+npm run build   # typecheck + static build into dist/ (BASE_PATH=/garden/ mimics Pages)
 ```
 
-- `src/lib/seed-data.ts`: the plants, packet info, care milestones and initial plantings.
-- `src/lib/schedule.ts`: turns packet data and the care log into the schedule.
-- `src/lib/store.ts`: IndexedDB storage, first-run seeding, backup export/import.
-- `src/lib/actions.ts`: every change to the garden, used by both the UI and the assistant.
-- `src/lib/assistant.ts`: assistant context, tools and the tool loop. Conversations are stored append-only, and the system prompt and tools stay fixed, so prompt caching keeps working.
+- `src/lib/store.ts`: IndexedDB storage, garden files, and the one-time photo migration.
+- `src/lib/actions.ts`: every change to a garden, used by both the UI and the assistant. Planter layouts are applied here.
+- `src/lib/trayMarkdown.ts`: parses and writes planter tables.
+- `src/lib/schedule.ts` and `src/lib/calendar.ts`: the care schedule, and the calendar entries built from it.
+- `src/lib/assistant/`: `core.ts` (context, tools), `claude.ts` and `ollama.ts` (backends).
+
+`public/seed/` still holds the photos bundled with the first version. Gardens created then are copied into browser storage on their next visit, and the folder will be removed once that has happened on every device in use.

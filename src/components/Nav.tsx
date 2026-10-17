@@ -2,6 +2,7 @@ import { NavLink } from "react-router";
 
 const LINKS = [
   { to: "/", label: "Today", end: true },
+  { to: "/calendar", label: "Calendar" },
   { to: "/trays", label: "Planters" },
   { to: "/plants", label: "Seed library" },
   { to: "/settings", label: "Settings" },

@@ -2,9 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { addDays, daysBetween } from "../src/lib/dates.ts";
 import { careSchedule, wateringInterval, type ScheduleInput } from "../src/lib/schedule.ts";
-import { SPECIES } from "../src/lib/seed-data.ts";
+import type { Milestone } from "../src/lib/model.ts";
 
-const lettuce = SPECIES.find((s) => s.slug === "lettuce")!;
+// Lettuce as printed on a Botanical Interests packet: up in 5–10 days, thin at 1/2", 68–82 days to maturity.
+const lettuce = {
+  germDaysMin: 5,
+  germDaysMax: 10,
+  waterEveryDays: 1,
+  milestones: [
+    { key: "thin", title: 'Thin when ~1/2" tall', from: "sprouted", dayMin: 3, dayMax: 7, event: "thinned" },
+    { key: "feed", title: "First light feeding (half-strength)", from: "sprouted", dayMin: 14, dayMax: 21, event: "fertilized" },
+    { key: "transplant", title: "Harden off & transplant", from: "sown", dayMin: 28, dayMax: 42, event: "transplanted" },
+    { key: "harvest", title: "Harvest heads", from: "sown", dayMin: 68, dayMax: 82, event: "harvested" },
+  ] satisfies Milestone[],
+};
 const base = (over: Partial<ScheduleInput> = {}): ScheduleInput => ({
   status: "sown",
   sownAt: "2026-10-05",
@@ -57,11 +68,4 @@ test("sprout-relative milestones wait for sprouts and complete on the matching e
   assert.equal(thin.status, "due");
   const thinned = { ...sprouted, events: [...sprouted.events, { type: "thinned", date: "2026-10-14" }] };
   assert.equal(byKey(careSchedule(thinned, "2026-10-20"), "thin").status, "done");
-});
-
-test("every seeded species has a consistent schedule", () => {
-  for (const s of SPECIES) {
-    if (s.germDaysMin != null) assert.ok(s.germDaysMin <= s.germDaysMax!, s.slug);
-    for (const m of s.milestones) assert.ok(m.dayMin <= m.dayMax, `${s.slug}/${m.key}`);
-  }
 });

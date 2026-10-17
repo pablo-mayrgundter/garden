@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { addNote, addPhoto, addTask, createPlanting, logCare, saveSpecies, updateGarden, updatePlanting } from "@/lib/actions";
 import { isDate } from "@/lib/dates";
 import { useGarden } from "@/lib/GardenContext";
-import { EVENT_TYPES, PLANTING_STATUSES, type EventType, type PlantingStatus } from "@/lib/seed-data";
+import { EVENT_TYPES, PLANTING_STATUSES, type EventType, type PlantingStatus } from "@/lib/model";
 import type { Photo, Planting, Species } from "@/lib/types";
 
 const LABELS: Record<string, string> = {

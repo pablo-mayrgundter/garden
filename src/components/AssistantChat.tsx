@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { Link, useLocation } from "react-router";
 import { useGarden } from "@/lib/GardenContext";
-import { getApiKey } from "@/lib/settings";
+import { assistantReady, getAssistantSettings } from "@/lib/settings";
 
 type Msg = { role: "user" | "assistant"; text?: string; tools?: string[] };
 
 // The Claude SDK is only downloaded once someone sends a message.
-const loadAssistant = () => import("@/lib/assistant");
+const loadAssistant = () => import("@/lib/assistant/index");
 
 function pageLabel(pathname: string): string {
   if (pathname.startsWith("/plantings/")) return "this planting";
@@ -33,15 +33,17 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
-  const apiKey = getApiKey();
+  const settings = getAssistantSettings();
+  const ready = assistantReady(settings);
+  const provider = settings.provider;
 
   useEffect(() => {
     if (loaded) return;
     loadAssistant()
-      .then((a) => a.threadForDisplay(db))
+      .then((a) => a.threadForDisplay(db, provider))
       .then(setMessages)
       .finally(() => setLoaded(true));
-  }, [loaded, db]);
+  }, [loaded, db, provider]);
 
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
@@ -50,7 +52,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   const send = useCallback(
     async (text: string) => {
       const message = text.trim();
-      const key = getApiKey();
+      const key = assistantReady();
       if (!message || busy || !key) return;
       setInput("");
       setBusy(true);
@@ -58,7 +60,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       const update = (fn: (last: Msg) => Msg) => setMessages((m) => [...m.slice(0, -1), fn(m[m.length - 1])]);
       const a = await loadAssistant();
       try {
-        await a.runAssistantTurn({ db, latest, act, gardener, today, apiKey: key }, { pathname, message }, (e) => {
+        await a.runAssistantTurn({ db, latest, act, gardener, today }, { pathname, message }, (e) => {
           if (e.t === "text") update((l) => ({ ...l, text: (l.text ?? "") + e.v }));
           else if (e.t === "tool") update((l) => ({ ...l, text: l.text ? `${l.text}\n\n` : l.text, tools: [...(l.tools ?? []), e.summary] }));
           else if (e.t === "error") update((l) => ({ ...l, text: `${l.text ? `${l.text}\n\n` : ""}⚠️ ${e.message}` }));
@@ -74,7 +76,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
   );
 
   const reset = async () => {
-    await (await loadAssistant()).startNewThread(db);
+    await (await loadAssistant()).startNewThread(db, provider);
     setMessages([]);
   };
 
@@ -83,19 +85,21 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       <div className="assistant-head">
         <div style={{ flex: 1 }}>
           <strong>Garden assistant</strong>
-          <div className="ctx">Looking at {pageLabel(pathname)}</div>
+          <div className="ctx">
+            {provider === "ollama" ? settings.ollamaModel : "Claude"} · looking at {pageLabel(pathname)}
+          </div>
         </div>
         <button className="ghost small" onClick={reset} disabled={busy} title="Start a new conversation">New chat</button>
         <button className="ghost small" onClick={onClose} aria-label="Close">✕</button>
       </div>
       <div className="assistant-body" ref={bodyRef}>
-        {!apiKey && (
+        {!ready && (
           <p className="small">
-            To use the assistant, add your Anthropic API key in <Link to="/settings" onClick={onClose}>Settings</Link>. It stays on this
-            device.
+            To use the assistant, add your Anthropic API key or connect a local Ollama model in{" "}
+            <Link to="/settings" onClick={onClose}>Settings</Link>.
           </p>
         )}
-        {apiKey && loaded && messages.length === 0 && (
+        {ready && loaded && messages.length === 0 && (
           <p className="muted small" style={{ margin: 0 }}>
             I can see what page you&rsquo;re on, the packet info, schedule, notes and photos. I can also log care, save notes and set reminders for you.
           </p>
@@ -119,7 +123,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
           ),
         )}
       </div>
-      {apiKey && (
+      {ready && (
         <div className="stack" style={{ gap: 0 }}>
           {!busy && (
             <div className="suggestions" style={{ padding: "0 10px 8px" }}>
