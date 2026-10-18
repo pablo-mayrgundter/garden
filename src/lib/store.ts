@@ -1,12 +1,13 @@
-// Local-first storage: everything lives in the browser's IndexedDB. A remote
-// backup/sync backend can be added later behind the same functions; until then,
-// exportBackup/importBackup move a garden between devices as a file.
+// Local-first storage: everything lives in the browser's IndexedDB, and nothing
+// about a garden ships with the app. A garden starts empty or from an imported
+// file; exportBackup/importBackup move a whole garden between devices and app
+// instances. A remote backup/sync backend can be added later behind these functions.
 
 import { openDB, type IDBPDatabase } from "idb";
-import { ESTIMATED_SOW_DATE, PHOTO_DATE, PLANTINGS, SPECIES, TRAYS } from "./seed-data.ts";
 import type { CareEvent, ChatRecord, Garden, GardenData, Note, Photo, Planting, Species, Task, Tray } from "./types.ts";
 
 export type GardenDB = IDBPDatabase;
+export type Provider = "claude" | "ollama";
 
 const DB_VERSION = 1;
 export const RECORD_STORES = ["species", "trays", "plantings", "events", "notes", "photos", "tasks"] as const;
@@ -20,7 +21,7 @@ export function newId(): string {
 const now = () => new Date().toISOString();
 
 export async function openGardenDb(name = "garden"): Promise<GardenDB> {
-  const db = await openDB(name, DB_VERSION, {
+  return openDB(name, DB_VERSION, {
     upgrade(db) {
       db.createObjectStore("meta");
       for (const s of RECORD_STORES) db.createObjectStore(s, { keyPath: "id" });
@@ -29,17 +30,21 @@ export async function openGardenDb(name = "garden"): Promise<GardenDB> {
       chat.createIndex("threadId", "threadId");
     },
   });
-  if (!(await db.get("meta", "garden"))) await seedGarden(db);
-  return db;
 }
 
-export async function loadAll(db: GardenDB): Promise<GardenData> {
+/** Everything in this browser's garden, or null when no garden has been started here yet. */
+export async function loadAll(db: GardenDB): Promise<GardenData | null> {
   const tx = db.transaction(["meta", ...RECORD_STORES], "readonly");
   const [garden, species, trays, plantings, events, notes, photos, tasks] = await Promise.all([
     tx.objectStore("meta").get("garden"),
     ...RECORD_STORES.map((s) => tx.objectStore(s).getAll()),
   ]);
+  if (!garden) return null;
   return { garden, species, trays, plantings, events, notes, photos, tasks } as GardenData;
+}
+
+export async function createGarden(db: GardenDB, input: { name: string; timezone: string; gardener: string | null }): Promise<void> {
+  await saveGarden(db, { id: "garden", name: input.name, timezone: input.timezone, gardeners: input.gardener ? [input.gardener] : [], createdAt: now() });
 }
 
 export async function putRecords<S extends RecordStore>(db: GardenDB, store: S, records: StoreRecord[S][]): Promise<void> {
@@ -65,92 +70,36 @@ export async function getPhotoBlob(db: GardenDB, id: string): Promise<Blob | und
   return db.get("photoBlobs", id);
 }
 
-// ---------- Seed: the garden from our handwritten plan and seed packets ----------
-
-export async function seedGarden(db: GardenDB): Promise<void> {
-  const created = now();
-  const garden: Garden = {
-    id: "garden",
-    name: "Herb Garden",
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-    gardeners: [],
-    createdAt: created,
-  };
-  const photos: Photo[] = [];
-  const photo = (file: string, p: Partial<Photo> & Pick<Photo, "kind" | "caption">) =>
-    photos.push({
-      id: `photo-${file}`,
-      plantingId: null,
-      speciesId: null,
-      trayId: null,
-      takenAt: PHOTO_DATE,
-      mime: "image/webp",
-      src: `seed/${file}.webp`,
-      by: null,
-      createdAt: created,
-      ...p,
-    });
-
-  const species = SPECIES.map(({ hasPacketImages, ...s }) => {
-    if (hasPacketImages) {
-      photo(`${s.slug}-front`, { speciesId: s.slug, kind: "packet_front", caption: "Seed packet (front)" });
-      photo(`${s.slug}-back`, { speciesId: s.slug, kind: "packet_back", caption: "Seed packet (back)" });
-    }
-    return { ...s, id: s.slug, createdAt: created };
-  });
-
-  const trays = TRAYS.map((t, i) => {
-    if (t.photo) photo(t.photo, { trayId: t.key, kind: "tray", caption: `${t.name}, ${PHOTO_DATE}` });
-    return { id: t.key, name: t.name, kind: t.kind, rows: t.rows, cols: t.cols, notes: t.notes, position: i, createdAt: created };
-  });
-
-  const plantings = [];
-  const events = [];
-  const notes = [];
-  for (const p of PLANTINGS) {
-    const id = `${p.tray}-${p.cells.join("-")}`;
-    const sown = p.status !== "planned";
-    plantings.push({
-      id,
-      speciesId: p.species,
-      trayId: p.tray,
-      cells: p.cells,
-      location: null,
-      status: p.status,
-      sownAt: sown ? ESTIMATED_SOW_DATE : null,
-      sowDateEstimated: sown,
-      createdAt: created,
-      updatedAt: created,
-    });
-    if (p.sprouted)
-      events.push({ id: `${id}-sprouted`, plantingId: id, type: "sprouted", date: PHOTO_DATE, note: "Seen in the tray photo", by: null, byAssistant: false, createdAt: created });
-    if (p.note) notes.push({ id: `${id}-note`, plantingId: id, body: p.note, by: null, byAssistant: false, createdAt: `${PHOTO_DATE}T12:00:00.000Z` });
-    if (p.photo) photo(p.photo, { plantingId: id, kind: "progress", caption: `Cell ${p.cells.join("–")}, ${PHOTO_DATE}` });
+/**
+ * Gardens started by the first version of the app pointed some photos at image
+ * files bundled with the site. Copy those into this browser so the garden no
+ * longer depends on the site serving them. Photos that can't be fetched yet are
+ * left as they are and retried next time.
+ */
+export async function migrateBundledPhotos(db: GardenDB, fetchFile: (src: string) => Promise<Blob | null>): Promise<number> {
+  const photos = ((await db.getAll("photos")) as Photo[]).filter((p) => p.src);
+  let moved = 0;
+  for (const p of photos) {
+    const blob = await fetchFile(p.src!).catch(() => null);
+    if (!blob) continue;
+    await savePhoto(db, { ...p, src: null, mime: blob.type || p.mime }, blob);
+    moved++;
   }
-
-  const tx = db.transaction(["meta", ...RECORD_STORES], "readwrite");
-  const put = (store: string, records: object[]) => records.map((r) => tx.objectStore(store).put(r));
-  await Promise.all([
-    tx.objectStore("meta").put(garden, "garden"),
-    ...put("species", species),
-    ...put("trays", trays),
-    ...put("plantings", plantings),
-    ...put("events", events),
-    ...put("notes", notes),
-    ...put("photos", photos),
-    tx.done,
-  ]);
+  return moved;
 }
 
-// ---------- Backup file ----------
+// ---------- Garden file (full export / import) ----------
 
 export type Backup = {
   app: "herb-garden";
-  version: 1;
+  version: 1 | 2;
   exportedAt: string;
   data: GardenData;
-  /** Uploaded photo bytes, as data: URLs keyed by photo id. */
+  /** Photo bytes, as data: URLs keyed by photo id. */
   photoBlobs: Record<string, string>;
+  /** Assistant conversations (version 2+). */
+  chats?: Omit<ChatRecord, "seq">[];
+  chatThreads?: Partial<Record<Provider, string>>;
 };
 
 function base64(buf: ArrayBuffer): string {
@@ -167,13 +116,19 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 
 export async function exportBackup(db: GardenDB): Promise<Backup> {
   const data = await loadAll(db);
+  if (!data) throw new Error("There's no garden here to export yet.");
   const photoBlobs: Record<string, string> = {};
   for (const p of data.photos) {
-    if (p.src) continue;
     const blob = await getPhotoBlob(db, p.id);
     if (blob) photoBlobs[p.id] = `data:${blob.type || p.mime};base64,${await blobToBase64(blob)}`;
   }
-  return { app: "herb-garden", version: 1, exportedAt: now(), data, photoBlobs };
+  const chats = ((await db.getAll("chat")) as ChatRecord[]).sort((a, b) => a.seq! - b.seq!).map(({ seq: _seq, ...rest }) => rest);
+  const chatThreads: Partial<Record<Provider, string>> = {};
+  for (const p of ["claude", "ollama"] as const) {
+    const id = await db.get("meta", threadKey(p));
+    if (id) chatThreads[p] = id;
+  }
+  return { app: "herb-garden", version: 2, exportedAt: now(), data, photoBlobs, chats, chatThreads };
 }
 
 function dataUrlToBlob(url: string): Blob {
@@ -185,29 +140,35 @@ function dataUrlToBlob(url: string): Blob {
   return new Blob([bytes], { type: mime });
 }
 
-/** Replaces everything in this browser with the backup's contents (chats are kept). */
+/** Replaces everything in this browser with the file's contents. */
 export async function importBackup(db: GardenDB, backup: Backup): Promise<void> {
-  if (backup?.app !== "herb-garden" || backup.version !== 1 || !backup.data?.garden) throw new Error("That file isn't a Herb Garden backup.");
-  const tx = db.transaction(["meta", "photoBlobs", ...RECORD_STORES], "readwrite");
-  await Promise.all([...RECORD_STORES.map((s) => tx.objectStore(s).clear()), tx.objectStore("photoBlobs").clear()]);
+  if (backup?.app !== "herb-garden" || ![1, 2].includes(backup.version) || !backup.data?.garden)
+    throw new Error("That file isn't a Herb Garden file.");
+  const stores = ["meta", "photoBlobs", "chat", ...RECORD_STORES];
+  const tx = db.transaction(stores, "readwrite");
+  await Promise.all(stores.map((s) => tx.objectStore(s).clear()));
   const { garden, ...records } = backup.data;
   await tx.objectStore("meta").put(garden, "garden");
-  for (const s of RECORD_STORES) for (const r of records[s]) await tx.objectStore(s).put(r);
-  for (const [id, url] of Object.entries(backup.photoBlobs)) await tx.objectStore("photoBlobs").put(dataUrlToBlob(url), id);
+  for (const s of RECORD_STORES) for (const r of records[s] ?? []) await tx.objectStore(s).put(r);
+  for (const [id, url] of Object.entries(backup.photoBlobs ?? {})) await tx.objectStore("photoBlobs").put(dataUrlToBlob(url), id);
+  for (const c of backup.chats ?? []) await tx.objectStore("chat").add(c);
+  for (const [p, id] of Object.entries(backup.chatThreads ?? {})) await tx.objectStore("meta").put(id, threadKey(p as Provider));
   await tx.done;
 }
 
-// ---------- Assistant conversations ----------
+// ---------- Assistant conversations (one current thread per provider) ----------
 
-export async function currentThreadId(db: GardenDB): Promise<string> {
-  const id = (await db.get("meta", "chatThread")) as string | undefined;
+const threadKey = (p: Provider) => `chatThread:${p}`;
+
+export async function currentThreadId(db: GardenDB, provider: Provider): Promise<string> {
+  const id = ((await db.get("meta", threadKey(provider))) ?? (provider === "claude" ? await db.get("meta", "chatThread") : undefined)) as string | undefined;
   if (id) return id;
-  return newThread(db);
+  return newThread(db, provider);
 }
 
-export async function newThread(db: GardenDB): Promise<string> {
+export async function newThread(db: GardenDB, provider: Provider): Promise<string> {
   const id = newId();
-  await db.put("meta", id, "chatThread");
+  await db.put("meta", id, threadKey(provider));
   return id;
 }
 

@@ -2,7 +2,7 @@
 // watering cadence, germination window, and the species' milestones.
 
 import { addDays, daysBetween } from "./dates.ts";
-import type { EventType, Milestone, PlantingStatus } from "./seed-data.ts";
+import type { EventType, Milestone, PlantingStatus } from "./model.ts";
 
 export type CareStatus = "done" | "overdue" | "due" | "upcoming" | "late";
 

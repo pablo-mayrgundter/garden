@@ -52,12 +52,22 @@ export function Today() {
         </div>
       </div>
 
+      {data.trays.length === 0 && data.plantings.length === 0 && (
+        <section className="card" style={{ marginBottom: 16 }}>
+          <h2>Welcome to {data.garden.name} 🌱</h2>
+          <ol className="small" style={{ paddingLeft: 18, marginBottom: 0 }}>
+            <li><Link to="/plants/new">Add your seed packets</Link> to the seed library (or let a planter add them by name).</li>
+            <li><Link to="/trays/new">Add a planter</Link> by writing its cells as a little table — rows are letters, columns are numbers.</li>
+            <li>Mark what&rsquo;s sown, and the app builds a care schedule from each packet.</li>
+          </ol>
+        </section>
+      )}
+
       {estimated && (
         <div className="card" style={{ marginBottom: 16, borderColor: "var(--terracotta)" }}>
-          <strong>📅 Sow date is an estimate.</strong>{" "}
+          <strong>📅 Some sow dates are estimates.</strong>{" "}
           <span className="muted">
-            We guessed {formatDate(estimated.sownAt!)} from how far along the seedlings were in the Oct 14 photo. Fix it on any planting page (or tell the
-            assistant, e.g. “we sowed the seed tray on Oct 3”) and every schedule updates.
+            Fix them on the planting pages (or tell the assistant, e.g. “we sowed the seed tray on Oct 3”) and the schedules update.
           </span>
         </div>
       )}
