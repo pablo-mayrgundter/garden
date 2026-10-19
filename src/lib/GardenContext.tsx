@@ -1,10 +1,17 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { ActionCtx } from "./actions.ts";
+import { migrateCountedNames, type ActionCtx } from "./actions.ts";
 import { todayIn } from "./dates.ts";
 import { createGarden, getPhotoBlob, importBackup, loadAll, migrateBundledPhotos, openGardenDb, type Backup, type GardenDB } from "./store.ts";
 import type { GardenData, Photo } from "./types.ts";
 
 const GARDENER_KEY = "garden.gardener";
+
+/** Loads the garden, first bringing older data up to date (e.g. after opening an old garden file). */
+async function loadTidied(db: GardenDB): Promise<GardenData | null> {
+  const data = await loadAll(db);
+  if (data && (await migrateCountedNames({ db, data, by: null, today: "" }))) return loadAll(db);
+  return data;
+}
 
 type GardenState = {
   db: GardenDB;
@@ -54,7 +61,7 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
         });
         if (moved) console.info(`Copied ${moved} photos into this browser's storage.`);
         setDb(d);
-        setData(await loadAll(d));
+        setData(await loadTidied(d));
         setLoaded(true);
       })
       .catch((e) => setError(String(e?.message ?? e)));
@@ -64,7 +71,7 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const reload = useCallback(async () => {
-    if (db) setData(await loadAll(db));
+    if (db) setData(await loadTidied(db));
   }, [db]);
 
   const setGardener = useCallback((name: string | null) => {

@@ -312,14 +312,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 }
 
 /* Bed rows and individual plants */
-.row-bed { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #6b4f3a; border-radius: 14px; border: 6px solid #a07a52; }
-.row-bed.mini { padding: 6px; gap: 4px; border-width: 3px; border-radius: 8px; }
-.bed-row { display: flex; gap: 10px; align-items: flex-start; background: #5a4130; border-radius: 8px; padding: 8px 10px; color: #f4ecdc; }
-.row-bed.mini .bed-row { padding: 3px 5px; gap: 5px; border-radius: 4px; }
-.bed-row a { color: #f4ecdc; }
-.bed-row .muted { color: #d8c8ac; }
-.bed-row-label { font-weight: 700; font-size: 0.8rem; background: rgb(0 0 0 / 0.35); border-radius: 6px; padding: 1px 7px; flex: none; }
-.row-bed.mini .bed-row-label { font-size: 0.65rem; padding: 0 4px; }
 .bed-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .bed-planting { display: flex; flex-direction: column; gap: 6px; }
 .plant-strip { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -335,7 +327,6 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .plant-strip.mini .plant-dot { width: 9px; height: 9px; border-width: 1px; }
 .plant-dot.legend { width: 12px; height: 12px; border-width: 1px; vertical-align: -2px; }
 .cond-legend { gap: 12px; margin-top: 6px; }
-.row-bed .cond-legend { color: #e8dcc6; }
 .observe-form { display: flex; flex-direction: column; gap: 8px; background: var(--surface); color: var(--text); border-radius: 10px; padding: 10px; }
 .observe-form .chip-btn { border-radius: 999px; }
 .cond-swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
@@ -374,3 +365,14 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .layer-toggles { display: flex; flex-direction: column; gap: 4px; }
 .map-panel .ent-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 320px; overflow: auto; }
 .map-panel .ent-list button { width: 100%; text-align: left; justify-content: flex-start; }
+
+/* ---------- Beds planted in rows ---------- */
+.bed-plan { display: block; width: 100%; height: auto; color: var(--muted); font-family: ui-sans-serif, system-ui, sans-serif; }
+.bed-plan .bed-spot { cursor: pointer; }
+.bed-plan .bed-spot:hover circle:last-child { filter: brightness(1.25); }
+.bed-size { margin-top: 8px; }
+.bed-legend { gap: 14px; margin-top: 4px; }
+.bed-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.bed-rows > li { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--border); }
+.bed-row-label { font-weight: 700; font-size: 0.8rem; background: var(--surface-2); border-radius: 6px; padding: 1px 7px; flex: none; }
+.bed-rows .spacer { flex: 1; }

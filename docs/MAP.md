@@ -50,7 +50,7 @@ Entities live in their own IndexedDB store, `mapEntities` (database version 2), 
 
 ### Links
 
-- `trayId`: a planter. A bed linked to a planter draws its rows: each planting's row across the bed's short side, its plants spaced evenly along the long side (`bedPlants` in `render.tsx`), sized by growth stage and colored by each plant's latest check. A seed station linked to a tray draws its cells.
+- `trayId`: a planter. A bed linked to a planter draws its rows: rows run along the bed's long side and are spread evenly across it, and each row's plants are spaced evenly along it. The positions come from `layoutBed` in `src/lib/bedLayout.ts`, the same layout the planter page draws, so the two always agree. Plants are colored by crop (`src/lib/plantColors.ts`), drawn by growth stage, and tinted by their latest check. The bed's size on the map is the planter's size: changing it on the planter page resizes the map bed, and linking a planter that already has a size resizes the bed to match. A seed station linked to a tray draws its cells.
 - `speciesId`: a plant from the seed library, e.g. the variety of a fruit tree.
 - `entityId`: another map entity this one belongs to: netting over a bed, a drip line or sensor in a bed, a valve feeding a zone, a gantry over a bed. Removing an entity clears links that point to it.
 

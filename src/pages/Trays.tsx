@@ -36,7 +36,7 @@ export function TraysPage() {
                 <span className="muted small">{inTray.length ? `${inTray.length} plantings` : "empty — ready to plant"}</span>
               </div>
               <p className="small muted">{t.kind}</p>
-              <TrayGrid tray={t} plantings={inTray} covers={byPlanting} />
+              <TrayGrid tray={t} plantings={inTray} covers={byPlanting} preview />
             </section>
           );
         })}

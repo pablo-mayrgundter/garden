@@ -4,7 +4,9 @@
 // every rotation. Kinds without a drawer here draw as a plain box.
 
 import type { ReactNode } from "react";
+import { layoutBed } from "../bedLayout.ts";
 import { plantStates } from "../garden.ts";
+import { speciesColor } from "../plantColors.ts";
 import type { GardenData, Planting } from "../types.ts";
 import { boxFaces, orderFaces, pathOf, type Face, type Projector, type Vec3 } from "./geometry.ts";
 import type { MapEntity } from "./model.ts";
@@ -44,11 +46,14 @@ export function MapPatterns() {
         <rect width="1.2" height="1.2" fill={PAL.grass} />
         <path d="M0.2 0.9 l0.08 -0.3 M0.75 0.45 l0.06 -0.28 M0.5 1.15 l0.05 -0.25" stroke="#9aa66a" strokeWidth="0.06" />
       </pattern>
-      <pattern id="pat-soil" width="0.6" height="0.6" patternUnits="userSpaceOnUse">
-        <rect width="0.6" height="0.6" fill={PAL.soil} />
-        <circle cx="0.15" cy="0.2" r="0.05" fill="#6e5038" />
-        <circle cx="0.45" cy="0.45" r="0.04" fill="#c9a77f" />
-        <circle cx="0.4" cy="0.1" r="0.03" fill="#6e5038" />
+      <pattern id="pat-soil" width="1.3" height="1.1" patternUnits="userSpaceOnUse">
+        <rect width="1.3" height="1.1" fill={PAL.soil} />
+        <circle cx="0.17" cy="0.23" r="0.022" fill="#8a6748" />
+        <circle cx="0.71" cy="0.09" r="0.018" fill="#a8845f" />
+        <circle cx="1.02" cy="0.57" r="0.02" fill="#8a6748" />
+        <circle cx="0.43" cy="0.81" r="0.017" fill="#a8845f" />
+        <circle cx="0.93" cy="0.98" r="0.015" fill="#8a6748" />
+        <circle cx="0.29" cy="0.52" r="0.014" fill="#a8845f" />
       </pattern>
       <pattern id="pat-pavers" width="2" height="2" patternUnits="userSpaceOnUse">
         <rect width="2" height="2" fill={PAL.concrete} />
@@ -186,44 +191,32 @@ function Building(e: MapEntity, { pj }: DrawCtx, windows: boolean) {
   );
 }
 
-/** Plants of a planter laid out in a bed: rows across the short side, plants spaced along the long side. */
-export function bedPlants(e: MapEntity, data: GardenData, inset = 0.35): { x: number; y: number; r: number; color: string; stage: number; key: string }[] {
+/** Plants of a planter laid out in a bed, from the same layout as the planter page: rows along the long side. */
+export function bedPlants(e: MapEntity, data: GardenData, inset = 0.18): { x: number; y: number; r: number; color: string; stage: number; key: string }[] {
   const tray = e.links.trayId ? data.trays.find((t) => t.id === e.links.trayId) : undefined;
   if (!tray) return [];
   const alongX = e.w >= e.d;
-  const L = (alongX ? e.w : e.d) - inset * 2;
-  const S = (alongX ? e.d : e.w) - inset * 2;
-  const R = Math.max(1, tray.rows.length);
-  const C = Math.max(1, tray.cols);
-  const out: ReturnType<typeof bedPlants> = [];
+  const size = { length: (alongX ? e.w : e.d) - inset * 2, width: (alongX ? e.d : e.w) - inset * 2 };
+  const plantings = data.plantings.filter((x) => x.trayId === tray.id);
+  const bed = layoutBed(tray, plantings, size);
+  const byId = new Map(plantings.map((p) => [p.id, p]));
+  const species = new Map(data.species.map((x) => [x.id, x]));
+  const states = new Map(plantings.map((p) => [p.id, p.count ? plantStates(data, p.id, p.count) : []]));
   const stageOf = (p: Planting) => ({ planned: 0.15, sown: 0.3, sprouted: 0.6, growing: 0.85, transplanted: 0.85, harvesting: 1, done: 0.4, failed: 0.2 })[p.status] ?? 0.5;
-  for (const p of data.plantings.filter((x) => x.trayId === tray.id && x.cells.length)) {
-    const row = p.cells[0].replace(/^\d+/, "");
-    const r = tray.rows.indexOf(row);
-    if (r < 0) continue;
-    const cols = p.cells.map((c) => parseInt(c, 10)).filter((n) => n > 0);
-    const segStart = ((Math.min(...cols) - 1) / C) * L;
-    const segLen = ((Math.max(...cols) - Math.min(...cols) + 1) / C) * L;
-    const n = p.count ?? p.cells.length;
-    const across = ((r + 0.5) / R) * S;
-    const radius = Math.min(segLen / n, S / R) * 0.42;
-    const states = p.count ? plantStates(data, p.id, p.count) : [];
-    const stage = stageOf(p);
-    for (let i = 0; i < n; i++) {
-      const along = segStart + ((i + 0.5) * segLen) / n;
-      const st = states[i];
-      const color = st && st.condition !== "healthy" ? CONDITION_TINT[st.condition] : p.status === "planned" || p.status === "sown" ? PAL.seed : PAL.plant;
-      out.push({
-        key: `${p.id}-${i}`,
-        x: alongX ? e.x + inset + along : e.x + inset + across,
-        y: alongX ? e.y + inset + across : e.y + inset + along,
-        r: radius,
-        color,
-        stage,
-      });
-    }
-  }
-  return out;
+  const rowGap = size.width / Math.max(1, tray.rows.length);
+  const spacing = new Map(bed.rows.flatMap((r) => r.plantings.map((rp) => [rp.planting.id, rp.spacingIn / 12] as const)));
+  return bed.spots.map((s) => {
+    const p = byId.get(s.plantingId)!;
+    const st = states.get(p.id)?.[s.n - 1];
+    return {
+      key: `${p.id}-${s.n}`,
+      x: alongX ? e.x + inset + s.along : e.x + inset + s.across,
+      y: alongX ? e.y + inset + s.across : e.y + inset + s.along,
+      r: Math.min(spacing.get(p.id) ?? rowGap, rowGap) * 0.42,
+      color: st && st.condition !== "healthy" ? CONDITION_TINT[st.condition] : speciesColor(species.get(p.speciesId)),
+      stage: stageOf(p),
+    };
+  });
 }
 
 const CONDITION_TINT: Record<string, string> = {
@@ -248,7 +241,7 @@ function Plants({ e, ctx, z }: { e: MapEntity; ctx: DrawCtx; z: number }) {
         const lift = pj.mode === "iso" ? r * 0.6 : 0;
         // Planned spots are marked out; sown ones show a seed; once up, a plant that grows with its stage.
         if (p.stage < 0.3)
-          return <ellipse key={p.key} cx={sx} cy={sy} rx={p.r * 0.55} ry={p.r * (pj.mode === "iso" ? 0.32 : 0.55)} fill="none" stroke="#f3ead6" strokeOpacity={0.75} strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />;
+          return <ellipse key={p.key} cx={sx} cy={sy} rx={p.r * 0.55} ry={p.r * (pj.mode === "iso" ? 0.32 : 0.55)} fill="none" stroke={p.color} strokeWidth={1.25} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />;
         return p.stage <= 0.3 ? (
           <ellipse key={p.key} cx={sx} cy={sy} rx={Math.max(0.07, p.r * 0.3)} ry={Math.max(0.05, p.r * (pj.mode === "iso" ? 0.18 : 0.3))} fill={p.color} stroke="#f3ead6" strokeOpacity={0.6} strokeWidth={0.75} vectorEffect="non-scaling-stroke" />
         ) : (

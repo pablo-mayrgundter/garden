@@ -11,7 +11,7 @@ The sample garden (`public/samples/herb-garden.json`) is our own herb garden: th
 - **Today**: everything that needs doing, grouped so one tap waters a whole planter, plus what's coming up in the next two weeks and your own reminders.
 - **Calendar**: a month view with one short line per entry: what was done (care log, sowings), what's planned (schedule steps), what's overdue, and reminders. Tap a day for the full list.
 - **Planters**: each one is drawn cell by cell from a small markdown table (rows are letters, columns are numbers, each cell names a plant). Outdoor beds use the same table with one row per planted row, like `Beet (Detroit Golden) x 18`. See below.
-- **Plant checks**: in a bed's rows every plant gets a numbered dot. Select some (or the whole row) and record what you see (healthy, pests, disease, nutrients, water, weeds, damage, missing). The dots take the color of each plant's latest check.
+- **Plant checks**: every plant in a bed gets its own spot. Tap some (or check a whole row) and record what you see (healthy, pests, disease, nutrients, water, weeds, damage, missing). Each plant is ringed in the color of its latest check.
 - **Garden map**: the whole lot in an isometric drawing, like an illustrated garden plan, or as a flat plan. It shows the house, front and back yards, fences, paths, beds with their rows of plants, trees, water and power on the house, irrigation and future robots. Pan, zoom and turn it, drag things around, and edit them in the side panel. See [docs/MAP.md](docs/MAP.md).
 - **Care schedule per plant**: built from the packet info in the seed library: daily misting while seedlings are in a planter, the germination window, then thinning, first feeding, pinching, potting up, transplanting and harvest windows. Logging the matching event checks a step off.
 - **Plant pages**: care log, notes, photo gallery (shrunk on the device before saving), front and back seed packet photos, packet facts, and a Wikipedia summary with a link to the full article.
@@ -53,7 +53,8 @@ Raised bed, 8 × 4 ft
 | D |                            |
 ```
 
-- A table with one column, or any cell with `x N`, is a bed of rows. The plants are spaced evenly along each row, on the bed's page and on the map.
+- A table with one column, or any cell with `x N`, is a bed of rows. The bed's page draws it to scale from above: rows spread evenly across the bed, each row's plants spaced evenly along it (24 plants in a 6 ft row are 3 in apart), colored by crop. The map draws the same layout.
+- Set the bed's real size with *Change size* on its page. A bed placed on the map takes its size from there, and changing it on either side changes both.
 - `(Variety)` is optional. Each variety gets its own seed library entry, with its own packet photos.
 - Changing just a count (`x 18` → `x 16`) keeps the planting and its history.
 - On the map, *Create a planter for this bed* starts one of these for a bed you've drawn.

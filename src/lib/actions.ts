@@ -3,7 +3,7 @@
 import { defaultMilestones, type Condition, type EventType, type PlantingStatus } from "./model.ts";
 import { deleteRecord, newId, putRecords, saveGarden, savePhoto, type GardenDB } from "./store.ts";
 import { cellRange } from "./garden.ts";
-import { formatCell, groupCells, parseTrayMarkdown, trayToMarkdown, type CellSpec } from "./trayMarkdown.ts";
+import { formatCell, groupCells, parseCell, parseTrayMarkdown, trayToMarkdown, type CellSpec } from "./trayMarkdown.ts";
 import { kindDef } from "./map/kinds.ts";
 import type { MapEntity, Site } from "./map/model.ts";
 import { siteTemplate } from "./map/template.ts";
@@ -233,6 +233,7 @@ export async function applyTrayLayout(ctx: ActionCtx, trayId: string | null, md:
     rows: parsed.rows,
     cols: parsed.cols,
     layout: parsed.layout,
+    size: existingTray?.size ?? null,
     position: existingTray?.position ?? data.trays.length,
     createdAt: existingTray?.createdAt ?? now(),
   };
@@ -404,6 +405,12 @@ export async function addMapEntity(ctx: ActionCtx, kind: string, at: { x: number
 export async function updateMapEntity(ctx: ActionCtx, id: string, patch: Partial<Omit<MapEntity, "id" | "createdAt">>) {
   const e = ctx.data.mapEntities.find((m) => m.id === id);
   if (!e) throw new Error("Unknown map item");
+  // Linking a planter whose bed size is already known resizes the bed on the map to match (keeping its orientation).
+  const linked = patch.links?.trayId && patch.links.trayId !== e.links.trayId ? ctx.data.trays.find((t) => t.id === patch.links!.trayId) : undefined;
+  if (linked?.size && patch.w == null && patch.d == null) {
+    const alongX = e.w >= e.d;
+    patch = { ...patch, w: alongX ? linked.size.length : linked.size.width, d: alongX ? linked.size.width : linked.size.length };
+  }
   await putRecords(ctx.db, "mapEntities", [
     { ...e, ...patch, props: { ...e.props, ...(patch.props ?? {}) }, links: { ...e.links, ...(patch.links ?? {}) }, updatedAt: now() },
   ]);
@@ -436,4 +443,73 @@ export async function createPlanterForEntity(ctx: ActionCtx, entityId: string, r
   // applyTrayLayout makes a 1-column table a row bed.
   await putRecords(ctx.db, "mapEntities", [{ ...e, links: { ...e.links, trayId: r.trayId }, updatedAt: now() }]);
   return r.trayId;
+}
+
+/** Sets a bed's size. A bed on the map keeps its size there (so the map stays right); otherwise it's kept on the planter. */
+export async function setBedSize(ctx: ActionCtx, trayId: string, size: { length: number; width: number }) {
+  const tray = ctx.data.trays.find((t) => t.id === trayId);
+  if (!tray) throw new Error("Unknown planter");
+  const length = Math.max(size.length, size.width);
+  const width = Math.min(size.length, size.width);
+  const e = ctx.data.mapEntities.find((m) => m.links.trayId === trayId);
+  if (e) {
+    const alongX = e.w >= e.d;
+    await putRecords(ctx.db, "mapEntities", [{ ...e, w: alongX ? length : width, d: alongX ? width : length, updatedAt: now() }]);
+  } else {
+    await putRecords(ctx.db, "trays", [{ ...tray, size: { length, width } }]);
+  }
+}
+
+/**
+ * Beds laid out before the app knew the "Radish x 24" shorthand saved the whole
+ * cell as a plant's name. Split those back into the plant and its count, merge
+ * with an existing plant of that name, and mark their planters as beds of rows.
+ * Safe to run on every load: it only touches names that still end in "x N".
+ */
+export async function migrateCountedNames(ctx: ActionCtx): Promise<number> {
+  const { data, db } = ctx;
+  const species = [...data.species];
+  const plantings = new Map(data.plantings.map((p) => [p.id, p]));
+  const photos = new Map(data.photos.map((p) => [p.id, p]));
+  const changedPlantings = new Set<string>();
+  const changedPhotos = new Set<string>();
+  const changedSpecies: Species[] = [];
+  const removed: string[] = [];
+  for (const s of data.species) {
+    const spec = parseCell(s.commonName);
+    if (spec.count == null || !spec.name) continue;
+    const variety = spec.variety ?? s.variety;
+    const target = species.find((o) => o.id !== s.id && !removed.includes(o.id) && norm(o.commonName) === norm(spec.name) && norm(o.variety) === norm(variety));
+    for (const p of plantings.values()) {
+      if (p.speciesId !== s.id) continue;
+      plantings.set(p.id, { ...p, speciesId: target?.id ?? s.id, count: p.count ?? spec.count, updatedAt: now() });
+      changedPlantings.add(p.id);
+    }
+    if (target) {
+      for (const ph of photos.values()) {
+        if (ph.speciesId !== s.id) continue;
+        photos.set(ph.id, { ...ph, speciesId: target.id });
+        changedPhotos.add(ph.id);
+      }
+      removed.push(s.id);
+    } else {
+      const renamed: Species = {
+        ...s,
+        commonName: spec.name,
+        variety,
+        wikipediaTitle: !s.wikipediaTitle || s.wikipediaTitle === s.commonName.replace(/ /g, "_") ? spec.name.replace(/ /g, "_") : s.wikipediaTitle,
+      };
+      species[species.findIndex((o) => o.id === s.id)] = renamed;
+      changedSpecies.push(renamed);
+    }
+  }
+  if (!changedPlantings.size && !changedSpecies.length && !removed.length) return 0;
+  const counted = new Set([...plantings.values()].filter((p) => p.count && p.trayId).map((p) => p.trayId!));
+  const trays = data.trays.filter((t) => counted.has(t.id) && t.layout !== "rows").map((t) => ({ ...t, layout: "rows" as const }));
+  await putRecords(db, "species", changedSpecies);
+  await putRecords(db, "plantings", [...changedPlantings].map((id) => plantings.get(id)!));
+  await putRecords(db, "photos", [...changedPhotos].map((id) => photos.get(id)!));
+  await putRecords(db, "trays", trays);
+  for (const id of removed) await deleteRecord(db, "species", id);
+  return changedPlantings.size + changedSpecies.length + removed.length;
 }

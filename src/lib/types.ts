@@ -54,6 +54,8 @@ export type Tray = {
   notes: string | null;
   /** "rows" for outdoor beds planted in rows with plant counts; "cells" (default) for trays. */
   layout?: "cells" | "rows";
+  /** A bed's size in feet (length along its rows, width across them), when it isn't placed on the map. */
+  size?: { length: number; width: number } | null;
   position: number;
   createdAt: string;
 };

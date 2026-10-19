@@ -140,14 +140,17 @@ export function TrayGrid({
   covers,
   urgent,
   mini,
+  preview,
 }: {
   tray: Tray;
   plantings: PlantingView[];
   covers: Map<string, string>;
   urgent?: Map<string, CareStatus>;
   mini?: boolean;
+  /** A bed's drawing only, for lists. */
+  preview?: boolean;
 }) {
-  if (tray.layout === "rows") return <RowBed tray={tray} plantings={plantings} mini={mini} />;
+  if (tray.layout === "rows") return <RowBed tray={tray} plantings={plantings} mini={mini} preview={preview} />;
   const cells: React.ReactNode[] = [];
   const covered = new Set<string>();
   for (const row of tray.rows) {
