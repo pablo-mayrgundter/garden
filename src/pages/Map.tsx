@@ -12,6 +12,7 @@ import {
   longSideBearing,
   makeProjector,
   normDeg,
+  paintOrder,
   resizeFromCorner,
   rotForBearing,
   siteBounds,
@@ -24,6 +25,7 @@ import {
 import { KINDS, kindDef, type FieldDef } from "@/lib/map/kinds";
 import { DEFAULT_SITE, LAYER_KEYS, LAYERS, type Layer, type MapEntity, type Site } from "@/lib/map/model";
 import { drawEntity, MapPatterns, PAL } from "@/lib/map/render";
+import { entityShadow, gardenLocation, shadowShape, sunFrom, sunGroundDirection, sunPosition, type SunPosition } from "@/lib/map/sun";
 
 type View = { mode: ViewMode; rot: Rot; zoom: number; cx: number; cy: number };
 type Draft = { id: string; x: number; y: number; w: number; d: number; rot?: number };
@@ -148,12 +150,32 @@ export function MapPage() {
   const entities = useMemo(() => {
     const list = data.mapEntities.map((e) => (draft && draft.id === e.id ? { ...e, ...draft } : e)).filter((e) => !hidden.has(kindDef(e.kind).layer));
     const flat = list.filter((e) => kindDef(e.kind).flat).sort((a, b) => LAYERS[kindDef(a.kind).layer].order - LAYERS[kindDef(b.kind).layer].order || b.w * b.d - a.w * a.d);
-    const key = (e: MapEntity) => (pj.mode === "plan" ? e.z + e.h : pj.depth(e.x + e.w / 2, e.y + e.d / 2, e.z));
-    const solid = list.filter((e) => !kindDef(e.kind).flat).sort((a, b) => key(a) - key(b));
-    return [...flat, ...solid];
+    const solid = paintOrder(pj, list.filter((e) => !kindDef(e.kind).flat));
+    return { flat, solid, all: [...flat, ...solid] };
   }, [data.mapEntities, draft, hidden, pj]);
 
-  const selected = entities.find((e) => e.id === selectedId) ?? null;
+  const selected = entities.all.find((e) => e.id === selectedId) ?? null;
+
+  // ---------- Sun and shadows ----------
+
+  const [clock, setClock] = useState<{ live: boolean; at: number }>({ live: true, at: Date.now() });
+  const [shadows, setShadows] = useState(true);
+  useEffect(() => {
+    if (!clock.live) return;
+    const t = setInterval(() => setClock({ live: true, at: Date.now() }), 30_000);
+    return () => clearInterval(t);
+  }, [clock.live]);
+  const when = new Date(clock.at);
+  const where = gardenLocation(site, when);
+  const sun = sunPosition(when, where.lat, where.lon);
+  const shadowPaths = useMemo(() => {
+    if (!shadows || sun.altitude <= 0) return "";
+    return entities.solid
+      .map((e) => entityShadow(e, shadowShape(e.kind, kindDef(e.kind).flat), sun, site.northDeg))
+      .filter((poly): poly is [number, number][] => !!poly && poly.length > 2)
+      .map((poly) => poly.map(([x, y], i) => `${i ? "L" : "M"}${pj.p(x, y, 0.03).map((v) => v.toFixed(3)).join(" ")}`).join(" ") + " Z")
+      .join(" ");
+  }, [shadows, sun.altitude, sun.azimuth, entities.solid, site.northDeg, pj]);
 
   // ---------- Pointer handling ----------
 
@@ -298,7 +320,9 @@ export function MapPage() {
   };
 
   const empty = data.mapEntities.length === 0;
-  const ctx = { pj, data, today, zoom: view.zoom || 1 };
+  const ctx = { pj, data, today, zoom: view.zoom || 1, sunShadows: shadows && sun.altitude > 0 };
+  // Night: shade the whole scene, fading in through twilight.
+  const night = Math.min(1, Math.max(0, -sun.altitude / 8)) * 0.42;
   const transform = `translate(${size.w / 2 - view.cx * view.zoom} ${size.h / 2 - view.cy * view.zoom}) scale(${view.zoom || 1})`;
   const lot: [number, number, number][] = [
     [0, 0, 0],
@@ -339,14 +363,29 @@ export function MapPage() {
             <g transform={transform}>
               <path d={lotPath} fill={PAL.paper} stroke={PAL.ink} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
               <Grid pj={pj} site={site} step={gridStep} />
-              {entities.map((e) => (
+              {entities.flat.map((e) => (
+                <g key={e.id} data-id={e.id} className={`ent ent-${e.kind}`}>
+                  {drawEntity(e, ctx)}
+                </g>
+              ))}
+              {shadowPaths && (
+                <>
+                  <clipPath id="lot-clip">
+                    <path d={lotPath} />
+                  </clipPath>
+                  <path d={shadowPaths} fill="#1d2440" fillOpacity={0.2} pointerEvents="none" clipPath="url(#lot-clip)" />
+                </>
+              )}
+              {entities.solid.map((e) => (
                 <g key={e.id} data-id={e.id} className={`ent ent-${e.kind}`}>
                   {drawEntity(e, ctx)}
                 </g>
               ))}
               {selected && <Selection pj={pj} e={selected} zoom={view.zoom || 1} resizable={kindDef(selected.kind).resizable ?? false} />}
             </g>
-            <Labels entities={entities} pj={pj} toScreen={toScreen} zoom={view.zoom} selectedId={selectedId} />
+            {shadows && <Sun pj={pj} site={site} sun={sun} toScreen={toScreen} w={size.w} h={size.h} />}
+            {night > 0 && <rect width={size.w} height={size.h} fill="#141b3c" fillOpacity={night} pointerEvents="none" />}
+            <Labels entities={entities.all} pj={pj} toScreen={toScreen} zoom={view.zoom} selectedId={selectedId} />
             <Compass pj={pj} site={site} x={size.w - 34} y={size.h - 34} />
           </svg>
 
@@ -365,6 +404,15 @@ export function MapPage() {
               <button onClick={() => setView((v) => ({ ...v, ...fitView(pj, size.w, size.h) }))} title="Fit the lot">Fit</button>
             </div>
           </div>
+
+          <SunClock
+            clock={clock}
+            setClock={setClock}
+            sun={sun}
+            approximate={where.approximate}
+            shadows={shadows}
+            setShadows={setShadows}
+          />
 
           {empty && (
             <div className="map-empty card">
@@ -476,6 +524,112 @@ function Selection({ pj: base, e, zoom, resizable }: { pj: Projector; e: MapEnti
         </>
       )}
     </g>
+  );
+}
+
+/**
+ * The sun, at the edge of the map in the direction of its real place in the
+ * sky (out past the lot that way, raised by its altitude), with its altitude.
+ */
+function Sun({ pj, site, sun, toScreen, w, h }: { pj: Projector; site: Site; sun: SunPosition; toScreen: (x: number, y: number) => [number, number]; w: number; h: number }) {
+  if (sun.altitude < -1) return null;
+  const R = Math.max(site.width, site.depth) * 0.62;
+  const [ux, uy] = sunGroundDirection(sun, site.northDeg);
+  const lift = R * 0.55 * Math.sin((Math.max(0, sun.altitude) * Math.PI) / 180);
+  const [tx, ty] = toScreen(...pj.p(site.width / 2 + ux * R, site.depth / 2 + uy * R, lift));
+  const [ox, oy] = toScreen(...pj.p(site.width / 2, site.depth / 2, 0));
+  const dx = tx - ox || 1e-6;
+  const dy = ty - oy;
+  // Out from the middle of the map, in that direction, to just inside its edge.
+  const m = 34;
+  const t = Math.min(Math.abs((w / 2 - m) / dx), dy ? Math.abs((h / 2 - m) / dy) : Infinity);
+  const sx = w / 2 + dx * t;
+  const sy = h / 2 + dy * t;
+  const r = 12;
+  const color = sun.altitude < 8 ? "#f08a3c" : "#f6b93b";
+  return (
+    <g pointerEvents="none" className="map-sun">
+      <title>{`Sun ${Math.round(sun.altitude)}° up, from the ${sunFrom(sun.azimuth)}`}</title>
+      <circle cx={sx} cy={sy} r={r * 2.3} fill={color} fillOpacity={0.2} />
+      {Array.from({ length: 12 }, (_, i) => {
+        const a = (i / 12) * Math.PI * 2;
+        return <line key={i} x1={sx + Math.cos(a) * r * 1.35} y1={sy + Math.sin(a) * r * 1.35} x2={sx + Math.cos(a) * r * 1.85} y2={sy + Math.sin(a) * r * 1.85} stroke={color} strokeWidth={2} strokeLinecap="round" />;
+      })}
+      <circle cx={sx} cy={sy} r={r} fill={color} stroke="#c47a12" strokeWidth={1} />
+      <text x={sx} y={sy + r * 2.3 + 10} textAnchor="middle" className="sun-label">{Math.max(0, Math.round(sun.altitude))}°</text>
+    </g>
+  );
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const localDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/** The map's clock: live by default; drag through the day (or pick a date) to see the shadows move. */
+function SunClock({
+  clock,
+  setClock,
+  sun,
+  approximate,
+  shadows,
+  setShadows,
+}: {
+  clock: { live: boolean; at: number };
+  setClock: (c: { live: boolean; at: number }) => void;
+  sun: SunPosition;
+  approximate: boolean;
+  shadows: boolean;
+  setShadows: (on: boolean) => void;
+}) {
+  const at = new Date(clock.at);
+  const minutes = at.getHours() * 60 + at.getMinutes();
+  const set = (d: Date) => setClock({ live: false, at: d.getTime() });
+  const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return (
+    <div className="map-clock">
+      <div className="row small">
+        <label className="check" title="Sun and shadows">
+          <input type="checkbox" checked={shadows} onChange={(e) => setShadows(e.target.checked)} /> ☀️
+        </label>
+        <strong>{time}</strong>
+        <span className="muted">
+          {sun.altitude > 0 ? `sun ${Math.round(sun.altitude)}° up, from the ${sunFrom(sun.azimuth)}` : "sun down"}
+        </span>
+        {clock.live ? <span className="live-dot" title="Following the real time">live</span> : (
+          <button className="ghost small" onClick={() => setClock({ live: true, at: Date.now() })}>Now</button>
+        )}
+      </div>
+      {shadows && (
+        <div className="row small">
+          <input
+            type="range"
+            min={0}
+            max={1439}
+            step={5}
+            value={minutes}
+            aria-label="Time of day"
+            onChange={(e) => {
+              const m = Number(e.target.value);
+              const d = new Date(clock.at);
+              d.setHours(Math.floor(m / 60), m % 60, 0, 0);
+              set(d);
+            }}
+          />
+          <input
+            type="date"
+            value={localDate(at)}
+            aria-label="Date"
+            onChange={(e) => {
+              const [y, mo, da] = e.target.value.split("-").map(Number);
+              if (!y) return;
+              const d = new Date(clock.at);
+              d.setFullYear(y, mo - 1, da);
+              set(d);
+            }}
+          />
+        </div>
+      )}
+      {shadows && approximate && <div className="small muted">Location guessed from your time zone; set it under The lot.</div>}
+    </div>
   );
 }
 
@@ -712,6 +866,9 @@ function Heading({ e, onCommit }: { e: MapEntity; onCommit: (rot: number) => voi
 
 function SitePanel({ site }: { site: Site }) {
   const { act } = useGarden();
+  const [locating, setLocating] = useState(false);
+  const [locError, setLocError] = useState<string | null>(null);
+  const guess = gardenLocation(site);
   const save = (patch: Partial<Site>) => act((ctx) => setSite(ctx, { ...site, ...patch }));
   return (
     <section className="card">
@@ -723,6 +880,38 @@ function SitePanel({ site }: { site: Site }) {
         <NumField label="Snap" value={site.gridFt} min={0} step={0.25} onCommit={(gridFt) => save({ gridFt })} />
       </div>
       <p className="small muted">Width runs east–west, depth north–south. North is degrees clockwise from the top of the plan. Snap 0 turns snapping off.</p>
+      <h3>Location</h3>
+      <div className="num-grid">
+        <NumField label="Lat" value={site.lat ?? guess.lat} step={0.01} unit="°" onCommit={(lat) => save({ lat: Math.max(-90, Math.min(90, lat)), lon: site.lon ?? guess.lon })} />
+        <NumField label="Lon" value={site.lon ?? guess.lon} step={0.01} unit="°" onCommit={(lon) => save({ lon: ((lon + 540) % 360) - 180, lat: site.lat ?? guess.lat })} />
+      </div>
+      <div className="row small">
+        <button
+          className="small"
+          disabled={locating}
+          onClick={() => {
+            if (!navigator.geolocation) return setLocError("This browser can't share its location.");
+            setLocating(true);
+            setLocError(null);
+            navigator.geolocation.getCurrentPosition(
+              (p) => {
+                setLocating(false);
+                save({ lat: Math.round(p.coords.latitude * 1000) / 1000, lon: Math.round(p.coords.longitude * 1000) / 1000 });
+              },
+              (err) => {
+                setLocating(false);
+                setLocError(err.message || "Couldn't get the location.");
+              },
+              { timeout: 15000 },
+            );
+          }}
+        >
+          📍 {locating ? "Locating…" : "Use this device's location"}
+        </button>
+        {site.lat == null && <span className="muted">Not set: the sun is approximate.</span>}
+      </div>
+      {locError && <p className="small error">{locError}</p>}
+      <p className="small muted">For the sun and shadows. Rounded to about 100 m, and kept only in this browser and your garden files.</p>
     </section>
   );
 }

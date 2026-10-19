@@ -103,6 +103,8 @@ export type DrawCtx = {
   today: string;
   /** Pixels per scene unit, for things that should keep a constant size on screen. */
   zoom: number;
+  /** Real sun shadows are drawn, so drawers skip their own soft ground shadows. */
+  sunShadows?: boolean;
 };
 
 const ink = { stroke: PAL.ink, strokeWidth: 1, vectorEffect: "non-scaling-stroke" as const, strokeLinejoin: "round" as const };
@@ -289,7 +291,7 @@ function Canopy(e: MapEntity, ctx: DrawCtx, opts: { trunk: number; fruit?: strin
   });
   return (
     <>
-      {pj.mode === "iso" && <ellipse cx={gx} cy={gy} rx={rad * 0.9} ry={rad * 0.45} fill="#000" opacity={0.08} />}
+      {pj.mode === "iso" && !ctx.sunShadows && <ellipse cx={gx} cy={gy} rx={rad * 0.9} ry={rad * 0.45} fill="#000" opacity={0.08} />}
       {opts.trunk > 0 && pj.mode === "iso" && (
         <path d={`M${gx - 0.25} ${gy} L${gx - 0.2} ${pj.p(cx, cy, trunkTop)[1]} L${gx + 0.2} ${pj.p(cx, cy, trunkTop)[1]} L${gx + 0.25} ${gy} Z`} fill={PAL.trunk} {...ink} />
       )}

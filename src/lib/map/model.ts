@@ -17,6 +17,9 @@ export type Site = {
   northDeg: number;
   /** Snapping grid in feet. */
   gridFt: number;
+  /** Where the garden is, for the sun and shadows (degrees; north and east positive). */
+  lat?: number | null;
+  lon?: number | null;
 };
 
 export const DEFAULT_SITE: Site = { width: 60, depth: 130, northDeg: 0, gridFt: 0.5 };

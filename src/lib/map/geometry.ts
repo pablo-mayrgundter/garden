@@ -260,3 +260,62 @@ export function longSideBearing(e: Pick<MapEntity, "w" | "d" | "rot">, northDeg:
 export function rotForBearing(e: Pick<MapEntity, "w" | "d">, bearing: number, northDeg: number): number {
   return normDeg(bearing + northDeg - (e.w >= e.d ? 90 : 180));
 }
+
+// ---------- Drawing order ----------
+
+type Solid = Pick<MapEntity, "x" | "y" | "w" | "d" | "z" | "h" | "rot">;
+
+/**
+ * Back-to-front order for solid entities. In the isometric view one thing is
+ * drawn before another when its footprint lies wholly behind the other's along
+ * either ground axis (as the view sees them), so a long fence along the front
+ * covers the beds behind it even though its middle is far away. Things whose
+ * footprints overlap (netting over a bed, a tree over a bed) fall back to the
+ * depth of their centers. The plan view draws lowest tops first.
+ */
+export function paintOrder<T extends Solid>(pj: Projector, items: T[]): T[] {
+  if (pj.mode === "plan") return [...items].sort((a, b) => a.z + a.h - (b.z + b.h));
+  const eps = 1e-6;
+  const info = items.map((e) => {
+    const corners = footprintCorners(e);
+    const r = corners.map(([x, y]) => pj.toR(x, y));
+    const s = [...corners.map(([x, y]) => pj.p(x, y, e.z)), ...corners.map(([x, y]) => pj.p(x, y, e.z + e.h))];
+    return {
+      rx0: Math.min(...r.map((q) => q[0])),
+      rx1: Math.max(...r.map((q) => q[0])),
+      ry0: Math.min(...r.map((q) => q[1])),
+      ry1: Math.max(...r.map((q) => q[1])),
+      sx0: Math.min(...s.map((q) => q[0])),
+      sx1: Math.max(...s.map((q) => q[0])),
+      sy0: Math.min(...s.map((q) => q[1])),
+      sy1: Math.max(...s.map((q) => q[1])),
+      depth: pj.depth(e.x + e.w / 2, e.y + e.d / 2, e.z),
+    };
+  });
+  const behind = (a: (typeof info)[number], b: (typeof info)[number]) => a.rx1 <= b.rx0 + eps || a.ry1 <= b.ry0 + eps;
+  // For each item, the items that must be drawn before it. Only things that overlap on screen matter.
+  const first: number[][] = items.map(() => []);
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = info[i];
+      const b = info[j];
+      if (a.sx1 <= b.sx0 || b.sx1 <= a.sx0 || a.sy1 <= b.sy0 || b.sy1 <= a.sy0) continue;
+      const ab = behind(a, b);
+      const ba = behind(b, a);
+      if (ab !== ba) (ab ? first[j] : first[i]).push(ab ? i : j);
+      else (a.depth <= b.depth ? first[j] : first[i]).push(a.depth <= b.depth ? i : j);
+    }
+  }
+  // Depth-first topological sort, visiting nearer-last so ties keep the old order; a cycle is just broken.
+  const order: T[] = [];
+  const state = new Uint8Array(items.length); // 0 new, 1 visiting, 2 done
+  const visit = (i: number) => {
+    if (state[i]) return;
+    state[i] = 1;
+    for (const k of [...first[i]].sort((x, y) => info[x].depth - info[y].depth)) visit(k);
+    state[i] = 2;
+    order.push(items[i]);
+  };
+  for (const i of items.map((_, k) => k).sort((x, y) => info[x].depth - info[y].depth)) visit(i);
+  return order;
+}

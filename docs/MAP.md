@@ -87,9 +87,18 @@ Today's kinds: lawn, path (pavers, stepping stones, gravel, mulch, concrete), pa
 
 - `makeProjector(mode, rot, site)` maps world points to **scene** coordinates. Iso is a 2:1 dimetric projection (`sx = (rx − ry)·cos 30°`, `sy = (rx + ry)·½ − z·0.82`). Plan is top-down. `rot` turns the lot in quarter turns about its center, so you can look at it from any side.
 - Zoom and pan are a single SVG transform over the scene, so panning never redraws. Strokes use `vector-effect: non-scaling-stroke` and patterns are in scene units, so the drawing scales like ink on paper.
-- Order: flat kinds first (by layer, then largest first), then solids back to front by the depth of their center (iso) or by their top height (plan). Inside a drawer, `Faces` sorts a solid's faces the same way.
+- Order: flat kinds first (by layer, then largest first), then the sun's shadows, then solids back to front with `paintOrder`. In the isometric view one solid goes before another when its footprint lies wholly behind the other's along either ground axis (as the view sees them), so a long fence along the front covers the beds behind it even though its middle is far away; overlapping footprints (netting over a bed) fall back to center depth. The plan view draws lowest tops first. Inside a drawer, `Faces` sorts a solid's faces by depth.
 - Drawers get `{ pj, data, today, zoom }`. They work in world feet and project through `pj`, so the same code draws both views and all rotations. Pins (`Pin`) and the selection handle divide by `zoom` to keep a constant size on screen.
 - Labels are drawn in screen space on top, so text stays crisp. Areas are always labeled, and beds, buildings and trees once you zoom in.
+
+## Sun and shadows
+
+`src/lib/map/sun.ts` works out where the sun is (`sunPosition`, standard low-precision solar formulas, good to a fraction of a degree) from the time and the garden's location (`site.lat`, `site.lon`). Until the location is set, `gardenLocation` guesses one from the time zone's standard offset at 40°N, so the sun rises, peaks and sets about right.
+
+- **Shadows** are cast straight onto the ground: each solid's footprint and top are pushed away from the sun by height ÷ tan(altitude) (capped for a sun at the horizon), and the shadow is the outline around both (`entityShadow`). Kinds choose a shape: boxes; buildings add the roof ridge; trees and shrubs cast a canopy on a trunk; ground covers and areas cast none. Turned entities cast turned shadows. All shadows are one path clipped to the lot, drawn between the ground covers and the solids, so overlaps don't double up.
+- **The sun** is drawn at the edge of the map in the direction of its real place in the sky (out past the lot, raised by its altitude), with its altitude. Below the horizon the scene is shaded for night, fading in through twilight.
+- **The clock** follows the real time by default. Drag through the day or pick a date to move the sun; *Now* goes back to live. The ☀️ box turns sun and shadows off.
+- The lot settings take the latitude and longitude, or *Use this device's location* (rounded to about 100 m).
 
 ## Interaction
 
@@ -113,7 +122,7 @@ The model is meant to grow without migrations: new kinds are data, new settings 
 - **Irrigation zones.** Valves (`props.zone`) feed sprinklers and drip lines with the same zone. Next: a zone record with a schedule and flow rate, coverage shading from sprinkler radii and drip lines, and checking that every bed is covered. A controller kind (on the house wall, near the outlet) would own the zones and could later be driven from the app.
 - **Sensors.** `sensor` entities linked to a bed. Readings would be a new store keyed by sensor ID, shown on the map as badges and fed to the assistant.
 - **Robotic cultivation.** `gantry` covers a bed on rails, FarmBot style. Plant positions already come from `bedPlants`, so a gantry can be given exact seeding, watering and weeding coordinates per plant, and per-plant checks (pests, weeds) can become jobs. A `robot-dock` and paths between beds would serve a rover.
-- **Sun and shade.** With `northDeg`, the garden's latitude and entity heights, the map can cast shadows for a date and time and estimate hours of sun per bed.
+- **Sun and shade.** Shadows are drawn for any date and time. Next: shadows falling on raised things (beds, roofs) rather than only the ground, and adding up the hours of direct sun each bed gets over a day or a season, from the same `entityShadow` polygons.
 - **Plants on the map.** Tapping a plant dot in a bed could open that plant's check form directly, as on the bed's page.
 - **Shapes.** If a box stops being enough (curved beds, a winding path), add an optional `outline` polygon to an entity, used for drawing and hit-testing, with the box kept as its bounding box.
 - **Sync.** Entities have `updatedAt` and stable IDs, ready for a future sync or merge between devices.

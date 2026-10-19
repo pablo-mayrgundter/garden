@@ -377,3 +377,11 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .bed-row-label { font-weight: 700; font-size: 0.8rem; background: var(--surface-2); border-radius: 6px; padding: 1px 7px; flex: none; }
 .bed-rows .spacer { flex: 1; }
 .map-panel .heading-field { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.map-clock { position: absolute; left: 10px; bottom: 10px; max-width: calc(100% - 80px); background: color-mix(in srgb, var(--surface) 92%, transparent); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.map-clock .row { gap: 8px; flex-wrap: wrap; }
+.map-clock input[type="range"] { flex: 1; min-width: 140px; padding: 0; }
+.map-clock input[type="date"] { width: auto; padding: 3px 6px; font-size: 0.85rem; }
+.map-clock .check { flex-direction: row; align-items: center; gap: 4px; color: var(--text); }
+.map-clock .live-dot { color: var(--green); font-weight: 600; }
+.map-clock .live-dot::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 4px; vertical-align: 1px; }
+.map-sun .sun-label { font-size: 11px; font-weight: 600; fill: #9a5b0e; paint-order: stroke; stroke: #fffaf0; stroke-width: 3px; }

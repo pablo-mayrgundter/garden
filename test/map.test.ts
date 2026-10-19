@@ -14,6 +14,7 @@ import {
   makeProjector,
   normDeg,
   orderFaces,
+  paintOrder,
   resizeFromCorner,
   rotForBearing,
   snap,
@@ -197,4 +198,20 @@ test("moving or resizing keeps a turn, and the turn round-trips", async () => {
   const id = await addMapEntity(await ctxFor(db), "raised-bed", { x: 20, y: 20 }, { rot: 25 });
   await updateMapEntity(await ctxFor(db), id, { x: 3 });
   assert.equal((await load(db)).mapEntities[0].rot, 25);
+});
+
+test("a long fence in front of a bed is drawn after it, though its middle is further back", () => {
+  const pj = makeProjector("iso", 0, DEFAULT_SITE);
+  // The south fence runs the whole width; a bed sits just north of its east end.
+  const fence = { x: 0, y: 129.7, w: 60, d: 0.3, z: 0, h: 6 };
+  const bed = { x: 50, y: 120, w: 8, d: 4, z: 0, h: 1 };
+  assert.ok(pj.depth(30, 129.85) < pj.depth(54, 122), "by centers alone the fence would be drawn first");
+  assert.deepEqual(paintOrder(pj, [fence, bed]), [bed, fence]);
+  // Seen from the other side, the fence is at the back.
+  assert.deepEqual(paintOrder(makeProjector("iso", 2, DEFAULT_SITE), [bed, fence]), [fence, bed]);
+  // Overlapping footprints (netting over the bed) go by height and depth: the netting last.
+  const net = { x: 50, y: 120, w: 8, d: 4, z: 1, h: 3 };
+  assert.deepEqual(paintOrder(pj, [net, bed]), [bed, net]);
+  // The plan view draws lowest tops first.
+  assert.deepEqual(paintOrder(makeProjector("plan", 0, DEFAULT_SITE), [fence, bed]), [bed, fence]);
 });
