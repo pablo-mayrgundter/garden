@@ -205,6 +205,25 @@ function Welcome({ db, onReady, setGardener }: { db: GardenDB; onReady: () => Pr
             }}
           />
         </div>
+        <div className="stack" style={{ gap: 8, marginTop: 18, textAlign: "center" }}>
+          <span className="small muted">or look around first, in a copy of our herb garden (packets, seed tray, photos and map)</span>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                // The sample is an ordinary garden file published next to the app, fetched only when asked for.
+                const res = await fetch(staticUrl("samples/herb-garden.json"));
+                if (!res.ok) throw new Error("Couldn't load the sample garden.");
+                const backup = (await res.json()) as Backup;
+                backup.data.garden.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+                await importBackup(db, backup);
+              })
+            }
+          >
+            {busy ? "Loading…" : "🌿 Explore the sample garden"}
+          </button>
+        </div>
         {error && <p className="error" style={{ marginTop: 12 }}>{error}</p>}
       </div>
     </main>

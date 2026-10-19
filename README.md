@@ -2,7 +2,9 @@
 
 A small app for tracking a garden: what's planted in each cell, when to water, thin, feed, transplant and harvest, plus notes, photos, a calendar and an AI garden assistant.
 
-It's a static site (Vite + React) hosted on GitHub Pages. **No garden data ships with the app.** Every garden lives only in the browser that created it (IndexedDB). It starts empty or from a garden file, and you can download it as a file at any time.
+It's a static site (Vite + React) hosted on GitHub Pages. **No garden data is built into the app.** Every garden lives only in the browser that created it (IndexedDB). It starts empty, from a garden file, or from the sample garden, and you can download it as a file at any time.
+
+The sample garden (`public/samples/herb-garden.json`) is our own herb garden: the seed packets, the seed tray from our plan with its first photos, and the map. It's an ordinary garden file, published next to the app and loaded only when someone picks *Explore the sample garden* on the first-visit screen. To refresh it, download a garden file from Settings, remove the `chats`, and replace the file.
 
 ## Features
 
