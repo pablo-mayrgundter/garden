@@ -26,7 +26,7 @@ This document is the spec: the data model, how drawing works, and where new feat
 
 ## Entities
 
-Everything on the map is a `MapEntity`: an axis-aligned box.
+Everything on the map is a `MapEntity`: a box, optionally turned about its center.
 
 ```ts
 type MapEntity = {
@@ -37,6 +37,7 @@ type MapEntity = {
   w: number; d: number;      // east–west and north–south size
   h: number;                 // height
   z: number;                 // base height (netting over a bed, an outlet on a wall)
+  rot?: number;              // turn about the center, degrees clockwise on the plan (0 = square to the lot)
   props: Record<string, string | number | boolean | null>;  // kind-specific settings
   links: { trayId?, speciesId?, entityId? };                 // ties to the rest of the garden
   notes: string | null;
@@ -44,7 +45,9 @@ type MapEntity = {
 };
 ```
 
-A box is enough for beds, buildings, slabs, fences, hedges, tree canopies, pipes and rails, and it keeps hit-testing, snapping, resizing and drawing simple. Things with an inherent direction (fences, paths, drip lines, gantries, a bed's rows) run along the box's **long side**.
+A box is enough for beds, buildings, slabs, fences, hedges, tree canopies, pipes and rails, and it keeps snapping, resizing and drawing simple. Things with an inherent direction (fences, paths, drip lines, gantries, a bed's rows) run along the box's **long side**.
+
+`x`, `y`, `w` and `d` describe the box before it's turned; `rot` then turns it about its center. Drawers never deal with the turn themselves: `drawEntity` hands each one `entityProjector(pj, e)`, a projector that turns points about the entity's center before projecting, so a drawer written for a square box draws correctly at any angle, and so does everything inside it (a bed's rows of plants, a building's walls and windows). The rest of the geometry helpers work on turned boxes too: `footprintCorners` gives a footprint's corners, `footprintBounds` the square box around it (used when placing new things), and `resizeFromCorner` resizes from the turned corner while the opposite corner stays put. A bed's rows run along its long side, so `longSideBearing` and `rotForBearing` convert between a turn and the rows' true compass heading, using the lot's `northDeg`.
 
 Entities live in their own IndexedDB store, `mapEntities` (database version 2), and travel in the garden file like every other record. An entity whose kind this version doesn't know still loads, edits and draws as a plain box, so a garden file from a newer version is safe to open.
 
@@ -91,10 +94,10 @@ Today's kinds: lawn, path (pavers, stepping stones, gravel, mulch, concrete), pa
 ## Interaction
 
 - Drag the background, or anything that isn't selected, to **pan**. That way a lawn can't be dragged away by accident.
-- Tap or click something to **select** it (`/map?e=<id>`, so a selection can be linked to). Drag the selected thing to **move** it, or its corner handle to **resize** it. Moves snap to the site grid.
+- Tap or click something to **select** it (`/map?e=<id>`, so a selection can be linked to). Drag the selected thing to **move** it, its corner handle to **resize** it, or the ⟳ handle off the end of its long side to **turn** it (5° steps, 1° with shift). Moves snap to the site grid. The panel shows the turn, and which way the long side runs by the compass ("Rows run 25° from north, NNE–SSW" for a bed); typing a heading turns the bed to match.
 - Scroll, pinch, or the − / + buttons to **zoom**. The buttons zoom in on the selection. *Fit* shows the whole lot.
 - *Iso* / *Plan* switch views and ⟲ / ⟳ turn the lot; the ground in the middle of the screen stays put.
-- Keyboard (when the map has focus): arrows nudge the selection by the grid step (shift: 1 ft), Delete removes it, Escape clears the selection.
+- Keyboard (when the map has focus): arrows nudge the selection by the grid step (shift: 1 ft), `[` and `]` turn it 5° (shift: 1°), Delete removes it, Escape clears the selection.
 - The side panel edits the selection live (name, position, size, kind settings, links, notes, duplicate, remove). With nothing selected it shows the add palette, layer toggles, a list of everything on the map, and the lot's settings.
 - New things land in the nearest clear spot to the middle of the view (`freeSpot`).
 - The view (mode, rotation, zoom, center) is remembered per browser in localStorage. It isn't part of the garden.

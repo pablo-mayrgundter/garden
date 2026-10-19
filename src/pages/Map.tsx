@@ -4,16 +4,32 @@ import { TrayGrid } from "@/components/ui";
 import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, updateMapEntity } from "@/lib/actions";
 import { coverPhotos, plantingViews, sortedSpecies, sortedTrays } from "@/lib/garden";
 import { useGarden } from "@/lib/GardenContext";
-import { freeSpot, makeProjector, siteBounds, snap, unprojectDelta, type Projector, type Rot, type ViewMode } from "@/lib/map/geometry";
+import {
+  compassPoint,
+  entityProjector,
+  footprintBounds,
+  freeSpot,
+  longSideBearing,
+  makeProjector,
+  normDeg,
+  resizeFromCorner,
+  rotForBearing,
+  siteBounds,
+  snap,
+  unprojectDelta,
+  type Projector,
+  type Rot,
+  type ViewMode,
+} from "@/lib/map/geometry";
 import { KINDS, kindDef, type FieldDef } from "@/lib/map/kinds";
 import { DEFAULT_SITE, LAYER_KEYS, LAYERS, type Layer, type MapEntity, type Site } from "@/lib/map/model";
 import { drawEntity, MapPatterns, PAL } from "@/lib/map/render";
 
 type View = { mode: ViewMode; rot: Rot; zoom: number; cx: number; cy: number };
-type Draft = { id: string; x: number; y: number; w: number; d: number };
+type Draft = { id: string; x: number; y: number; w: number; d: number; rot?: number };
 type Drag =
   | { type: "pan"; sx: number; sy: number; view: View; moved: boolean; selectId: string | null }
-  | { type: "move" | "resize"; sx: number; sy: number; entity: MapEntity; moved: boolean };
+  | { type: "move" | "resize" | "rotate"; sx: number; sy: number; entity: MapEntity; moved: boolean };
 
 const VIEW_KEY = "garden.mapView";
 const MIN_ZOOM = 0.8;
@@ -166,8 +182,8 @@ export function MapPage() {
     const target = (ev.target as Element).closest("[data-handle], [data-id]");
     const handle = target?.getAttribute("data-handle");
     const id = target?.getAttribute("data-id") ?? null;
-    if (handle && selected) {
-      startDrag(ev, { type: "resize", sx: pt.x, sy: pt.y, entity: selected, moved: false });
+    if ((handle === "resize" || handle === "rotate") && selected) {
+      startDrag(ev, { type: handle, sx: pt.x, sy: pt.y, entity: selected, moved: false });
     } else if (id && id === selectedId && selected) {
       startDrag(ev, { type: "move", sx: pt.x, sy: pt.y, entity: selected, moved: false });
     } else {
@@ -200,10 +216,15 @@ export function MapPage() {
     const e = d.entity;
     const g = site.gridFt;
     if (d.type === "move") {
-      setDraft({ id: e.id, x: snap(e.x + wx, g), y: snap(e.y + wy, g), w: e.w, d: e.d });
+      setDraft({ id: e.id, x: snap(e.x + wx, g), y: snap(e.y + wy, g), w: e.w, d: e.d, rot: e.rot });
+    } else if (d.type === "resize") {
+      setDraft({ id: e.id, ...resizeFromCorner(e, wx, wy, (v) => snap(v, g), Math.max(g, 0.25)), rot: e.rot });
     } else {
-      const min = Math.max(g, 0.25);
-      setDraft({ id: e.id, x: e.x, y: e.y, w: Math.max(min, snap(e.w + wx, g)), d: Math.max(min, snap(e.d + wy, g)) });
+      // Turn so the handle follows the pointer: 5° steps, 1° with shift.
+      const [gx, gy] = pj.unproject(...toScene(pt.x, pt.y));
+      const angle = (Math.atan2(gy - (e.y + e.d / 2), gx - (e.x + e.w / 2)) * 180) / Math.PI - (e.w >= e.d ? 0 : 90);
+      const step = ev.shiftKey ? 1 : 5;
+      setDraft({ id: e.id, x: e.x, y: e.y, w: e.w, d: e.d, rot: normDeg(Math.round(angle / step) * step) });
     }
   };
 
@@ -231,6 +252,13 @@ export function MapPage() {
       if (confirm(`Remove ${selected.name} from the map?`)) act((ctx) => deleteMapEntity(ctx, selected.id)).then(() => select(null));
       return;
     }
+    // [ and ] turn the selection (5°, or 1° with shift).
+    if ((ev.key === "[" || ev.key === "]" || ev.key === "{" || ev.key === "}") && kindDef(selected.kind).resizable) {
+      ev.preventDefault();
+      const step = (ev.shiftKey ? 1 : 5) * (ev.key === "[" || ev.key === "{" ? -1 : 1);
+      act((ctx) => updateMapEntity(ctx, selected.id, { rot: normDeg((selected.rot ?? 0) + step) }));
+      return;
+    }
     // Arrows nudge along the ground grid as it's drawn (diagonals in the isometric view).
     const dir = ({ ArrowRight: [1, 0], ArrowLeft: [-1, 0], ArrowDown: [0, 1], ArrowUp: [0, -1] } as Record<string, [number, number]>)[ev.key];
     if (!dir) return;
@@ -248,7 +276,7 @@ export function MapPage() {
     const def = kindDef(kind);
     const { w, d } = def.defaults;
     // Ground covers can go anywhere; anything else lands in the nearest clear spot.
-    const taken = def.flat ? [] : data.mapEntities.filter((e) => !kindDef(e.kind).flat);
+    const taken = def.flat ? [] : data.mapEntities.filter((e) => !kindDef(e.kind).flat).map(footprintBounds);
     const spot = freeSpot(taken, site, wx, wy, w, d, Math.max(site.gridFt, 0.5));
     const id = await act((ctx) => addMapEntity(ctx, kind, { x: spot.x + w / 2, y: spot.y + d / 2 }, { x: spot.x, y: spot.y }));
     if (hidden.has(kindDef(kind).layer)) setHidden((h) => new Set([...h].filter((l) => l !== kindDef(kind).layer)));
@@ -420,15 +448,32 @@ function Grid({ pj, site, step }: { pj: Projector; site: Site; step: number }) {
   return <path d={lines.join(" ")} stroke={PAL.ink} strokeOpacity={0.08} strokeWidth={1} vectorEffect="non-scaling-stroke" fill="none" pointerEvents="none" />;
 }
 
-function Selection({ pj, e, zoom, resizable }: { pj: Projector; e: MapEntity; zoom: number; resizable: boolean }) {
+function Selection({ pj: base, e, zoom, resizable }: { pj: Projector; e: MapEntity; zoom: number; resizable: boolean }) {
+  // Through the entity's own projector, so the outline and handles turn with it.
+  const pj = entityProjector(base, e);
   const ring = (z: number) => [pj.p(e.x, e.y, z), pj.p(e.x + e.w, e.y, z), pj.p(e.x + e.w, e.y + e.d, z), pj.p(e.x, e.y + e.d, z)].map((q, i) => `${i ? "L" : "M"}${q.join(" ")}`).join(" ") + " Z";
   const [hx, hy] = pj.p(e.x + e.w, e.y + e.d, e.z);
+  // The turn handle sits off the end of the long side.
+  const off = 22 / zoom;
+  const alongX = e.w >= e.d;
+  const [ex, ey] = pj.p(alongX ? e.x + e.w : e.x + e.w / 2, alongX ? e.y + e.d / 2 : e.y + e.d, e.z);
+  const [tx, ty] = pj.p(alongX ? e.x + e.w + off : e.x + e.w / 2, alongX ? e.y + e.d / 2 : e.y + e.d + off, e.z);
   return (
     <g pointerEvents="none">
       <path d={ring(e.z)} fill={PAL.accent} fillOpacity={0.12} stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeDasharray="6 3" />
       {pj.mode === "iso" && e.h > 0.5 && <path d={ring(e.z + e.h)} fill="none" stroke={PAL.accent} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
       {resizable && (
-        <circle data-handle="resize" cx={hx} cy={hy} r={7 / zoom} fill="#fff" stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" pointerEvents="all" style={{ cursor: "nwse-resize" }} />
+        <>
+          <line x1={ex} y1={ey} x2={tx} y2={ty} stroke={PAL.accent} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          <g data-handle="rotate" pointerEvents="all" style={{ cursor: "grab" }}>
+            <title>Drag to turn ([ and ] keys too)</title>
+            <circle cx={tx} cy={ty} r={8 / zoom} fill={PAL.accent} stroke="#fff" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+            <text x={tx} y={ty} fontSize={11 / zoom} fill="#fff" textAnchor="middle" dominantBaseline="central">⟳</text>
+          </g>
+          <circle data-handle="resize" cx={hx} cy={hy} r={7 / zoom} fill="#fff" stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" pointerEvents="all" style={{ cursor: "nwse-resize" }}>
+            <title>Drag to resize</title>
+          </circle>
+        </>
       )}
     </g>
   );
@@ -552,7 +597,7 @@ function EntityPanel({ e, onClose, onSelect }: { e: MapEntity; onClose: () => vo
 
   const duplicate = async () => {
     const id = await act((ctx) =>
-      addMapEntity(ctx, e.kind, { x: 0, y: 0 }, { name: `${e.name} copy`, x: e.x + 1, y: e.y + 1, w: e.w, d: e.d, h: e.h, z: e.z, props: { ...e.props }, notes: e.notes }),
+      addMapEntity(ctx, e.kind, { x: 0, y: 0 }, { name: `${e.name} copy`, x: e.x + 1, y: e.y + 1, w: e.w, d: e.d, h: e.h, z: e.z, rot: e.rot, props: { ...e.props }, notes: e.notes }),
     );
     onSelect(id);
   };
@@ -579,7 +624,9 @@ function EntityPanel({ e, onClose, onSelect }: { e: MapEntity; onClose: () => vo
           )}
           <NumField label="Height" value={e.h} min={0} onCommit={(h) => update({ h })} />
           <NumField label="Raised" value={e.z} min={0} onCommit={(z) => update({ z })} />
+          {def.resizable && <NumField label="Turn" value={e.rot ?? 0} step={5} unit="°" onCommit={(rot) => update({ rot: normDeg(rot) })} />}
         </div>
+        {def.resizable && <Heading e={e} onCommit={(rot) => update({ rot })} />}
         <p className="small muted">{def.description} X runs east from the lot&rsquo;s west edge, Y south from its north edge.</p>
         {def.fields?.map((f) => <PropField key={f.key} f={f} value={e.props[f.key]} onCommit={(v) => update({ props: { [f.key]: v } })} />)}
       </section>
@@ -643,6 +690,23 @@ function EntityPanel({ e, onClose, onSelect }: { e: MapEntity; onClose: () => vo
         </div>
       </section>
     </>
+  );
+}
+
+/** Which way the long side (a bed's rows) runs, by the compass; editable. */
+function Heading({ e, onCommit }: { e: MapEntity; onCommit: (rot: number) => void }) {
+  const { data } = useGarden();
+  const north = (data.garden.site ?? DEFAULT_SITE).northDeg;
+  const bearing = Math.round(longSideBearing(e, north) * 10) / 10;
+  const rows = e.links.trayId && data.trays.find((t) => t.id === e.links.trayId)?.layout === "rows";
+  return (
+    <div className="heading-field">
+      <NumField label={rows ? "Rows run" : "Runs"} value={bearing} step={5} unit="° from north" onCommit={(b) => onCommit(rotForBearing(e, b, north))} />
+      <span className="small muted">
+        {compassPoint(bearing)}–{compassPoint(bearing + 180)}
+        {north === 0 && " · north is the top of the plan until you set it in the lot settings"}
+      </span>
+    </div>
   );
 }
 

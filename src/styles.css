@@ -376,3 +376,4 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .bed-rows > li { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--border); }
 .bed-row-label { font-weight: 700; font-size: 0.8rem; background: var(--surface-2); border-radius: 6px; padding: 1px 7px; flex: none; }
 .bed-rows .spacer { flex: 1; }
+.map-panel .heading-field { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }

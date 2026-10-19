@@ -2,9 +2,10 @@
 //
 // World coordinates are feet on the ground plane: the origin is the lot's
 // north-west corner, x grows east and y grows south, z grows up. Every map
-// entity is an axis-aligned box (x, y, w, d on the ground, h tall, standing on
-// z), which is enough for beds, buildings, paths, fences, trees and pipes, and
-// keeps hit-testing, snapping and drawing simple. What a box *is* comes from its
+// entity is a box (x, y, w, d on the ground, h tall, standing on z), optionally
+// turned about its center by `rot` degrees, which is enough for beds,
+// buildings, paths, fences, trees and pipes, and keeps snapping and drawing
+// simple. What a box *is* comes from its
 // kind (src/lib/map/kinds.tsx); kind-specific settings live in `props`, and
 // links to the rest of the garden (planters, plants) in `links`.
 
@@ -54,6 +55,8 @@ export type MapEntity = {
   h: number;
   /** Height of the box's base above the ground (netting over a bed, an outlet on a wall). */
   z: number;
+  /** Turn about the box's center, in degrees clockwise on the plan (0 = square to the lot). */
+  rot?: number;
   props: Record<string, string | number | boolean | null>;
   links: MapLinks;
   notes: string | null;

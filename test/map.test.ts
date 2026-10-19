@@ -2,7 +2,25 @@ import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { addMapEntity, applySiteTemplate, applyTrayLayout, createPlanterForEntity, deleteMapEntity, updateMapEntity, type ActionCtx } from "../src/lib/actions.ts";
-import { boxFaces, contains, freeSpot, makeProjector, orderFaces, snap, unprojectDelta, type Rot } from "../src/lib/map/geometry.ts";
+import {
+  boxFaces,
+  compassPoint,
+  contains,
+  entityProjector,
+  footprintBounds,
+  footprintCorners,
+  freeSpot,
+  longSideBearing,
+  makeProjector,
+  normDeg,
+  orderFaces,
+  resizeFromCorner,
+  rotForBearing,
+  snap,
+  turn,
+  unprojectDelta,
+  type Rot,
+} from "../src/lib/map/geometry.ts";
 import { KINDS, kindDef } from "../src/lib/map/kinds.ts";
 import { DEFAULT_SITE, LAYERS } from "../src/lib/map/model.ts";
 import { createGarden, exportBackup, importBackup, loadAll, openGardenDb, type GardenDB } from "../src/lib/store.ts";
@@ -132,4 +150,51 @@ test("new things land in a free spot near where you're looking", () => {
   assert.ok(!overlapsHouse, JSON.stringify(spot));
   assert.ok(Math.hypot(spot.x + 4 - 28, spot.y + 2 - 64) < 25, "still nearby");
   assert.deepEqual(freeSpot([], DEFAULT_SITE, 10, 10, 4, 2), { x: 8, y: 9 });
+});
+
+test("a turned entity draws turned about its center", () => {
+  const pj = makeProjector("plan", 0, DEFAULT_SITE);
+  const bed = { x: 10, y: 10, w: 8, d: 4, rot: 90 };
+  const turned = entityProjector(pj, bed);
+  // A quarter turn clockwise: the east end swings to the south.
+  assert.ok(close(turned.p(18, 12), pj.p(14, 16)));
+  assert.ok(close(turned.p(14, 12), pj.p(14, 12)), "the center stays put");
+  assert.equal(entityProjector(pj, { ...bed, rot: 0 }), pj);
+  // Turning 90° covers the same ground as swapping width and depth.
+  assert.deepEqual(roundBox(footprintBounds(bed)), { x: 12, y: 8, w: 4, d: 8 });
+});
+
+const roundBox = (b: { x: number; y: number; w: number; d: number }) => Object.fromEntries(Object.entries(b).map(([k, v]) => [k, Math.round(v * 1e6) / 1e6]));
+
+test("resizing a turned bed keeps its far corner in place", () => {
+  const bed = { x: 10, y: 10, w: 8, d: 4, rot: 30 };
+  const anchor = footprintCorners(bed)[0];
+  // Drag the corner 2 ft further along the bed's own length.
+  const [dx, dy] = turn(2, 0, 30);
+  const out = resizeFromCorner(bed, dx, dy);
+  assert.ok(Math.abs(out.w - 10) < 1e-9 && Math.abs(out.d - 4) < 1e-9);
+  assert.ok(close(footprintCorners({ ...out, rot: 30 })[0], anchor));
+  // Unturned, it's a plain resize.
+  assert.deepEqual(resizeFromCorner({ x: 1, y: 2, w: 3, d: 4 }, 1, 1), { x: 1, y: 2, w: 4, d: 5 });
+});
+
+test("row headings are compass bearings, and setting one turns the bed", () => {
+  const bed = { w: 8, d: 4, rot: 0 };
+  assert.equal(longSideBearing(bed, 0), 90, "square to a north-up lot, a long east–west bed runs 90°");
+  assert.equal(longSideBearing({ w: 4, d: 8, rot: 0 }, 0), 0);
+  assert.equal(longSideBearing(bed, 20), 70, "north turned 20° clockwise");
+  for (const target of [0, 15, 45, 120, 179]) {
+    const rot = rotForBearing(bed, target, 20);
+    assert.ok(Math.abs(longSideBearing({ ...bed, rot }, 20) - target) < 1e-9, `bearing ${target}`);
+  }
+  assert.equal(compassPoint(22.5), "NNE");
+  assert.equal(compassPoint(200), "SSW");
+  assert.equal(normDeg(270), -90);
+});
+
+test("moving or resizing keeps a turn, and the turn round-trips", async () => {
+  const db = await fresh();
+  const id = await addMapEntity(await ctxFor(db), "raised-bed", { x: 20, y: 20 }, { rot: 25 });
+  await updateMapEntity(await ctxFor(db), id, { x: 3 });
+  assert.equal((await load(db)).mapEntities[0].rot, 25);
 });

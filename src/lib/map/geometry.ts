@@ -164,3 +164,99 @@ export function freeSpot(taken: Footprint[], site: Site, cx: number, cy: number,
   }
   return { x: Math.max(0, x0), y: Math.max(0, y0) };
 }
+
+// ---------- Turned entities ----------
+
+const rad = (deg: number) => (deg * Math.PI) / 180;
+
+/** Turns a ground offset (dx, dy) by `deg` clockwise on the plan. */
+export function turn(dx: number, dy: number, deg: number): Vec2 {
+  if (!deg) return [dx, dy];
+  const c = Math.cos(rad(deg));
+  const s = Math.sin(rad(deg));
+  return [dx * c - dy * s, dx * s + dy * c];
+}
+
+/**
+ * A projector for drawing one entity: its points are given as if the entity
+ * weren't turned, and are turned about its center before projecting. Drawers
+ * don't need to know about rotation at all.
+ */
+export function entityProjector(pj: Projector, e: Pick<MapEntity, "x" | "y" | "w" | "d" | "rot">): Projector {
+  if (!e.rot) return pj;
+  const cx = e.x + e.w / 2;
+  const cy = e.y + e.d / 2;
+  const world = (x: number, y: number): Vec2 => {
+    const [dx, dy] = turn(x - cx, y - cy, e.rot!);
+    return [cx + dx, cy + dy];
+  };
+  return {
+    ...pj,
+    toR: (x, y) => pj.toR(...world(x, y)),
+    p: (x, y, z = 0) => pj.p(...world(x, y), z),
+    depth: (x, y, z = 0) => pj.depth(...world(x, y), z),
+  };
+}
+
+/** The four ground corners of an entity's footprint, turned: NW, NE, SE, SW before turning. */
+export function footprintCorners(e: Pick<MapEntity, "x" | "y" | "w" | "d" | "rot">): Vec2[] {
+  const cx = e.x + e.w / 2;
+  const cy = e.y + e.d / 2;
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => {
+    const [dx, dy] = turn((sx * e.w) / 2, (sy * e.d) / 2, e.rot ?? 0);
+    return [cx + dx, cy + dy];
+  });
+}
+
+/** The square-to-the-lot box around a (possibly turned) footprint. */
+export function footprintBounds(e: Pick<MapEntity, "x" | "y" | "w" | "d" | "rot">): Pick<MapEntity, "x" | "y" | "w" | "d"> {
+  if (!e.rot) return { x: e.x, y: e.y, w: e.w, d: e.d };
+  const pts = footprintCorners(e);
+  const xs = pts.map((q) => q[0]);
+  const ys = pts.map((q) => q[1]);
+  return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), d: Math.max(...ys) - Math.min(...ys) };
+}
+
+/**
+ * Resizing by dragging the (turned) south-east corner by a ground offset: the
+ * opposite corner stays where it is, however the entity is turned.
+ */
+export function resizeFromCorner(
+  e: Pick<MapEntity, "x" | "y" | "w" | "d" | "rot">,
+  dx: number,
+  dy: number,
+  round: (v: number) => number = (v) => v,
+  min = 0.25,
+): Pick<MapEntity, "x" | "y" | "w" | "d"> {
+  const rot = e.rot ?? 0;
+  const [lx, ly] = turn(dx, dy, -rot);
+  const w = Math.max(min, round(e.w + lx));
+  const d = Math.max(min, round(e.d + ly));
+  const [ax, ay] = footprintCorners(e)[0];
+  const [ox, oy] = turn(w / 2, d / 2, rot);
+  return { x: ax + ox - w / 2, y: ay + oy - d / 2, w, d };
+}
+
+/** Degrees, normalized to (-180, 180]. */
+export function normDeg(deg: number): number {
+  const v = ((deg % 360) + 360) % 360;
+  return v > 180 ? v - 360 : v;
+}
+
+const POINTS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+export const compassPoint = (bearing: number) => POINTS[Math.round((((bearing % 360) + 360) % 360) / 22.5) % 16];
+
+/**
+ * Which way an entity's long side runs, as a true-north bearing in [0, 180)
+ * (rows run both ways). `northDeg` is how far true north is turned clockwise
+ * from the top of the plan.
+ */
+export function longSideBearing(e: Pick<MapEntity, "w" | "d" | "rot">, northDeg: number): number {
+  const onPlan = (e.w >= e.d ? 90 : 180) + (e.rot ?? 0);
+  return (((onPlan - northDeg) % 180) + 180) % 180;
+}
+
+/** The turn that makes an entity's long side run along a true-north bearing. */
+export function rotForBearing(e: Pick<MapEntity, "w" | "d">, bearing: number, northDeg: number): number {
+  return normDeg(bearing + northDeg - (e.w >= e.d ? 90 : 180));
+}

@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { addMapEntity, addNote, addTask, applyTrayLayout, deleteMapEntity, logCare, trayMarkdown, updateMapEntity, updatePlanting, type ActionCtx } from "../actions.ts";
+import { compassPoint, longSideBearing } from "../map/geometry.ts";
 import { KINDS, kindDef } from "../map/kinds.ts";
 import { DEFAULT_SITE, type MapEntity } from "../map/model.ts";
 import { formatDate, isDate } from "../dates.ts";
@@ -172,7 +173,11 @@ function mapEntitySummary(data: GardenData, e: MapEntity): string {
     e.links.entityId && `belongs to [${e.links.entityId}]`,
   ].filter(Boolean);
   const props = Object.entries(e.props).filter(([, v]) => v !== null && v !== "");
-  return `[${e.id}] ${e.kind} "${e.name}" x ${r(e.x)}, y ${r(e.y)}, ${r(e.w)}×${r(e.d)}×${r(e.h)} ft${e.z ? `, raised ${r(e.z)}` : ""}${props.length ? `, ${props.map(([k, v]) => `${k}=${v}`).join(", ")}` : ""}${links.length ? `, ${links.join(", ")}` : ""}${e.notes ? ` — ${e.notes}` : ""}`;
+  if (e.links.trayId && data.trays.find((t) => t.id === e.links.trayId)?.layout === "rows") {
+    const b = Math.round(longSideBearing(e, (data.garden.site ?? DEFAULT_SITE).northDeg));
+    props.push(["rows run", `${b}° from true north (${compassPoint(b)}–${compassPoint(b + 180)})`]);
+  }
+  return `[${e.id}] ${e.kind} "${e.name}" x ${r(e.x)}, y ${r(e.y)}, ${r(e.w)}×${r(e.d)}×${r(e.h)} ft${e.rot ? `, turned ${r(e.rot)}°` : ""}${e.z ? `, raised ${r(e.z)}` : ""}${props.length ? `, ${props.map(([k, v]) => `${k}=${v}`).join(", ")}` : ""}${links.length ? `, ${links.join(", ")}` : ""}${e.notes ? ` — ${e.notes}` : ""}`;
 }
 
 function mapSummary(data: GardenData): string {
@@ -242,14 +247,14 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "edit_map",
     description:
-      "Add, change or remove things on the garden map. Coordinates are feet: x east from the lot's west edge, y south from its north edge; w is east–west size, d north–south, h height. For 'update', fields left null stay as they are; for 'add', null sizes use the kind's defaults. Use 'link_planter_id' to show a planter's rows on a bed.",
+      "Add, change or remove things on the garden map. Coordinates are feet: x east from the lot's west edge, y south from its north edge; w is east–west size, d north–south, h height (before any turn); rot turns it clockwise about its center. For 'update', fields left null stay as they are; for 'add', null sizes use the kind's defaults. Use 'link_planter_id' to show a planter's rows on a bed.",
     properties: {
       changes: {
         type: "array",
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["op", "id", "kind", "name", "x", "y", "w", "d", "h", "link_planter_id", "notes"],
+          required: ["op", "id", "kind", "name", "x", "y", "w", "d", "h", "rot", "link_planter_id", "notes"],
           properties: {
             op: { type: "string", enum: ["add", "update", "remove"] },
             id: { type: "string", description: "Map item ID for update/remove; empty string for add." },
@@ -260,6 +265,7 @@ export const TOOL_SPECS: ToolSpec[] = [
             w: { type: ["number", "null"] },
             d: { type: ["number", "null"] },
             h: { type: ["number", "null"] },
+            rot: { type: ["number", "null"], description: "Turn about the item's center, degrees clockwise on the plan (0 = square to the lot)." },
             link_planter_id: { type: "string", description: "Planter ID to link, 'none' to unlink, or empty string to leave as is." },
             notes: { type: "string", description: "New notes, or empty string to leave as is." },
           },
@@ -304,6 +310,7 @@ const EditMap = z.object({
         w: num,
         d: num,
         h: num,
+        rot: num,
         link_planter_id: z.string().default(""),
         notes: z.string().default(""),
       }),
@@ -403,6 +410,7 @@ export async function runTool(name: string, raw: unknown, deps: AssistantDeps): 
           if (c.link_planter_id && c.link_planter_id !== "none" && !current.trays.some((t) => t.id === c.link_planter_id)) return fail(`Unknown planter ID ${c.link_planter_id}.`);
           const patch: Partial<MapEntity> = {};
           for (const k of ["x", "y", "w", "d", "h"] as const) if (c[k] != null) patch[k] = k === "x" || k === "y" ? c[k]! : Math.max(0, c[k]!);
+          if (c.rot != null) patch.rot = c.rot;
           if (c.name) patch.name = c.name;
           if (c.notes) patch.notes = c.notes;
           if (c.link_planter_id) patch.links = { trayId: c.link_planter_id === "none" ? null : c.link_planter_id };

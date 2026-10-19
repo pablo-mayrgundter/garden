@@ -8,7 +8,7 @@ import { layoutBed } from "../bedLayout.ts";
 import { plantStates } from "../garden.ts";
 import { speciesColor } from "../plantColors.ts";
 import type { GardenData, Planting } from "../types.ts";
-import { boxFaces, orderFaces, pathOf, type Face, type Projector, type Vec3 } from "./geometry.ts";
+import { boxFaces, entityProjector, orderFaces, pathOf, type Face, type Projector, type Vec3 } from "./geometry.ts";
 import type { MapEntity } from "./model.ts";
 
 export const PAL = {
@@ -130,8 +130,10 @@ function Ground({ e, pj, fill, z = 0, inset = 0, dashed, noStroke }: { e: MapEnt
 /** Whether a wall facing world direction (nx, ny) faces the viewer in this view. */
 function facesViewer(pj: Projector, nx: number, ny: number): boolean {
   if (pj.mode === "plan") return false;
-  const [a, b] = pj.toR(pj.site.width / 2 + nx, pj.site.depth / 2 + ny);
-  return a + b > 0;
+  // Through the projector, so a turned entity's walls are judged as turned.
+  const cx = pj.site.width / 2;
+  const cy = pj.site.depth / 2;
+  return pj.depth(cx + nx, cy + ny) > pj.depth(cx, cy);
 }
 
 function box(e: MapEntity, fill: { top: string; sideX: string; sideY: string }, z0 = e.z, z1 = e.z + e.h): Face[] {
@@ -505,7 +507,9 @@ export const DRAWERS: Record<string, Drawer> = {
   area: (e, { pj }) => <Ground e={e} pj={pj} fill="none" dashed />,
 };
 
-export function drawEntity(e: MapEntity, ctx: DrawCtx): ReactNode {
+export function drawEntity(e: MapEntity, base: DrawCtx): ReactNode {
+  // Drawers work as if the entity were square to the lot; the projector turns it.
+  const ctx = { ...base, pj: entityProjector(base.pj, e) };
   const d = DRAWERS[e.kind];
   if (d) return d(e, ctx);
   return <Faces pj={ctx.pj} faces={box(e, { top: "#e5dccb", sideX: "#cfc4ae", sideY: "#d9cfba" })} />;
