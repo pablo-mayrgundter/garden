@@ -11,6 +11,17 @@
 //   |---|----------|----------|------|-------|
 //   | A | Rosemary | Thyme    | Dill | Basil |
 //   | B | Oregano  |          |      | Sage  |
+//
+// Outdoor beds are usually planted in rows. A cell can name the variety in
+// parentheses and say how many plants it holds, e.g. "Beet (Detroit Golden) x 18";
+// a planter with counts is shown as rows of individual plants.
+//
+//   # Back bed 1
+//
+//   |   | 1                       |
+//   |---|-------------------------|
+//   | A | Beet (Detroit Golden) x 18 |
+//   | B | Carrot (Nantes) x 30    |
 
 export type ParsedTray = {
   name: string;
@@ -18,11 +29,33 @@ export type ParsedTray = {
   notes: string | null;
   rows: string[];
   cols: number;
-  /** Plant name per cell label ("1A"), only for non-empty cells. */
+  /** Cell text per cell label ("1A"), only for non-empty cells, e.g. "Basil" or "Beet (Detroit Golden) x 18". */
   cells: Map<string, string>;
+  /** "rows" when any cell gives a plant count: an outdoor bed planted in rows rather than a cell tray. */
+  layout: "cells" | "rows";
 };
 
-export type CellGroup = { name: string; cells: string[] };
+/** One planting: a plant (with optional variety and count) and the adjacent cells of a row it fills. */
+export type CellGroup = { name: string; variety: string | null; count: number | null; cells: string[] };
+
+export type CellSpec = { name: string; variety: string | null; count: number | null };
+
+/** Reads "Beet (Detroit Golden) x 18" as name, variety and count; all but the name are optional. */
+export function parseCell(text: string): CellSpec {
+  let rest = text.trim();
+  let count: number | null = null;
+  const m = rest.match(/^(.*?)\s*[x×*]\s*(\d+)$/i);
+  if (m && m[1]) {
+    rest = m[1].trim();
+    count = Number(m[2]);
+  }
+  const v = rest.match(/^(.*?)\s*\((.+)\)$/);
+  return v ? { name: v[1].trim(), variety: v[2].trim(), count } : { name: rest, variety: null, count };
+}
+
+export function formatCell(c: CellSpec): string {
+  return `${c.name}${c.variety ? ` (${c.variety})` : ""}${c.count ? ` x ${c.count}` : ""}`;
+}
 
 const EMPTY = new Set(["", "-", "–", "—", "·", ".", "empty", "x"]);
 
@@ -79,20 +112,26 @@ export function parseTrayMarkdown(md: string): ParsedTray {
   }
 
   const paragraphs = prose.map((p) => p.join(" ")).filter(Boolean);
-  return { name, kind: paragraphs[0] ?? null, notes: paragraphs.slice(1).join("\n\n") || null, rows, cols, cells };
+  // Counts mean plants in rows; so does a single column, since each row is then one strip of bed.
+  const layout = cols === 1 || [...cells.values()].some((c) => parseCell(c).count !== null) ? "rows" : "cells";
+  return { name, kind: paragraphs[0] ?? null, notes: paragraphs.slice(1).join("\n\n") || null, rows, cols, cells, layout };
 }
 
-/** Adjacent cells in a row naming the same plant become one group. */
+/** Adjacent cells in a row naming the same plant (and variety) become one planting; their counts add up. */
 export function groupCells(t: Pick<ParsedTray, "rows" | "cols" | "cells">): CellGroup[] {
   const groups: CellGroup[] = [];
+  const same = (a: CellSpec, b: CellSpec) => a.name.toLowerCase() === b.name.toLowerCase() && (a.variety ?? "").toLowerCase() === (b.variety ?? "").toLowerCase();
   for (const row of t.rows) {
     let current: CellGroup | null = null;
     for (let col = 1; col <= t.cols; col++) {
       const cell = `${col}${row}`;
-      const plant = t.cells.get(cell);
-      if (plant && current && current.name.toLowerCase() === plant.toLowerCase()) current.cells.push(cell);
-      else {
-        current = plant ? { name: plant, cells: [cell] } : null;
+      const text = t.cells.get(cell);
+      const spec = text ? parseCell(text) : null;
+      if (spec && current && same(current, spec)) {
+        current.cells.push(cell);
+        if (spec.count !== null) current.count = (current.count ?? 0) + spec.count;
+      } else {
+        current = spec ? { ...spec, cells: [cell] } : null;
         if (current) groups.push(current);
       }
     }

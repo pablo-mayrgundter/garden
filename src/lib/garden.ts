@@ -1,6 +1,7 @@
 // Read-side helpers over the in-memory GardenData.
 
 import { careSchedule, sortCare, type CareItem } from "./schedule.ts";
+import type { Condition } from "./model.ts";
 import type { CareEvent, GardenData, Note, Photo, Planting, Species, Task } from "./types.ts";
 
 export type PlantingView = Planting & {
@@ -102,4 +103,24 @@ function cellOrder(cell: string | undefined): number {
   const col = parseInt(cell, 10) || 0;
   const row = cell.replace(/^\d+/, "").charCodeAt(0) || 0;
   return row * 100 + col;
+}
+
+export type PlantState = { condition: Condition; date: string; note: string | null } | null;
+
+/**
+ * The latest observed condition of each plant (1…count) in a planting. An
+ * observation without plant numbers covers the whole planting; later
+ * observations of specific plants override it for those plants.
+ */
+export function plantStates(data: GardenData, plantingId: string, count: number): PlantState[] {
+  const states: PlantState[] = Array.from({ length: count }, () => null);
+  const observations = data.events
+    .filter((e) => e.plantingId === plantingId && e.type === "observed")
+    .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+  for (const e of observations) {
+    const state = { condition: e.condition ?? "other", date: e.date, note: e.note };
+    const targets = e.plants?.length ? e.plants : Array.from({ length: count }, (_, i) => i + 1);
+    for (const n of targets) if (n >= 1 && n <= count) states[n - 1] = state;
+  }
+  return states;
 }

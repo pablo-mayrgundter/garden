@@ -1,6 +1,8 @@
 import { Link, useNavigate, useParams } from "react-router";
 import { NoteForm, PhotoUpload, PlantingEditForm, QuickLog, TaskForm } from "@/components/forms";
 import { ActionButton, CareRow, EventLog, NoteList, Photo, StatusChip, TaskRow } from "@/components/ui";
+import { PacketPhotos } from "@/components/PacketPhotos";
+import { PlantingPlants } from "@/components/RowBed";
 import { WikipediaCard } from "@/components/WikipediaCard";
 import { deletePhoto, deletePlanting } from "@/lib/actions";
 import { daysBetween, formatDate } from "@/lib/dates";
@@ -53,6 +55,8 @@ export function PlantingPage() {
               <figcaption className="small muted" style={{ marginTop: 4 }}>{hero.caption ?? formatDate(hero.takenAt)}</figcaption>
             </figure>
           )}
+
+          <PlantingPlants planting={p} />
 
           <section className="card">
             <div className="card-head">
@@ -152,16 +156,10 @@ export function PlantingPage() {
             </section>
           )}
 
-          {packet.length > 0 && (
-            <section className="card">
-              <h3>Seed packet</h3>
-              <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                {packet.map((ph) => (
-                  <Photo key={ph.id} id={ph.id} alt={ph.caption ?? ""} className="packet" link />
-                ))}
-              </div>
-            </section>
-          )}
+          <section className="card">
+            <h3>Seed packet</h3>
+            <PacketPhotos species={s} />
+          </section>
 
           <section className="card">
             <details>

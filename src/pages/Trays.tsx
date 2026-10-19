@@ -52,6 +52,7 @@ export function TrayPage() {
   const tray = data.trays.find((t) => t.id === id);
   if (!tray) return <p className="empty">That planter doesn&rsquo;t exist. <Link to="/trays">All planters</Link></p>;
   const cell = params.get("cell");
+  const onMap = data.mapEntities.find((m) => m.links.trayId === tray.id);
   const plantings = plantingViews(data, today).filter((p) => p.trayId === tray.id);
   const { byPlanting } = coverPhotos(data);
   const photos = photosFor(data, { trayId: tray.id });
@@ -72,6 +73,7 @@ export function TrayPage() {
           <p className="sub"><Link to="/trays">Planters</Link> /</p>
           <h1>{tray.name}</h1>
           <p className="sub">{[tray.kind, tray.notes].filter(Boolean).join(" · ")}</p>
+          {onMap && <p className="sub"><Link to={`/map?e=${onMap.id}`}>🗺️ Show on the map</Link></p>}
         </div>
         {active.length > 0 && (
           <ActionButton className="primary" onClick={() => act((ctx) => logCare(ctx, { plantingIds: active.map((p) => p.id), type: "watered" }))}>

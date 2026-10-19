@@ -22,6 +22,7 @@ const data: GardenData = {
   events: [ev("e1", "p1", "watered", "2026-10-16"), ev("e2", "p2", "watered", "2026-10-16"), ev("e3", "p3", "watered", "2026-10-16"), ev("e4", "p1", "thinned", "2026-10-15")],
   notes: [],
   photos: [],
+  mapEntities: [],
   tasks: [{ id: "t1", plantingId: null, title: "Rotate the tray", dueDate: "2026-10-20", doneAt: null, by: null, byAssistant: false, createdAt: "" }],
 };
 

@@ -27,6 +27,7 @@ const VERB: Record<EventType, [string, string]> = {
   potted_up: ["🪴", "Potted up"],
   transplanted: ["🏡", "Transplanted"],
   harvested: ["🧺", "Harvested"],
+  observed: ["🔎", "Checked"],
   other: ["📝", "Noted"],
 };
 

@@ -1,0 +1,664 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
+import { Link, useSearchParams } from "react-router";
+import { TrayGrid } from "@/components/ui";
+import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, updateMapEntity } from "@/lib/actions";
+import { coverPhotos, plantingViews, sortedSpecies, sortedTrays } from "@/lib/garden";
+import { useGarden } from "@/lib/GardenContext";
+import { freeSpot, makeProjector, siteBounds, snap, unprojectDelta, type Projector, type Rot, type ViewMode } from "@/lib/map/geometry";
+import { KINDS, kindDef, type FieldDef } from "@/lib/map/kinds";
+import { DEFAULT_SITE, LAYER_KEYS, LAYERS, type Layer, type MapEntity, type Site } from "@/lib/map/model";
+import { drawEntity, MapPatterns, PAL } from "@/lib/map/render";
+
+type View = { mode: ViewMode; rot: Rot; zoom: number; cx: number; cy: number };
+type Draft = { id: string; x: number; y: number; w: number; d: number };
+type Drag =
+  | { type: "pan"; sx: number; sy: number; view: View; moved: boolean; selectId: string | null }
+  | { type: "move" | "resize"; sx: number; sy: number; entity: MapEntity; moved: boolean };
+
+const VIEW_KEY = "garden.mapView";
+const MIN_ZOOM = 0.8;
+const MAX_ZOOM = 80;
+const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+
+function readView(): Partial<View> {
+  try {
+    return JSON.parse(localStorage.getItem(VIEW_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeView(v: View) {
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify(v));
+  } catch {
+    // Private mode: the view just isn't remembered.
+  }
+}
+
+function fitView(pj: Projector, width: number, height: number): Pick<View, "zoom" | "cx" | "cy"> {
+  const b = siteBounds(pj);
+  const zoom = clampZoom(Math.min(width / (b.maxX - b.minX), height / (b.maxY - b.minY)) * 0.92);
+  return { zoom, cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2 };
+}
+
+/** Kinds whose names are worth printing on the map. */
+const LABELLED = new Set(["house", "shed", "raised-bed", "in-ground-bed", "herb-garden", "seed-station", "fruit-tree", "tree", "compost", "gantry", "patio"]);
+
+export function MapPage() {
+  const { data, today, act } = useGarden();
+  const site: Site = data.garden.site ?? DEFAULT_SITE;
+  const [params, setParams] = useSearchParams();
+  const selectedId = params.get("e");
+  const select = useCallback(
+    (id: string | null) =>
+      setParams(
+        (p) => {
+          const n = new URLSearchParams(p);
+          if (id) n.set("e", id);
+          else n.delete("e");
+          return n;
+        },
+        { replace: true },
+      ),
+    [setParams],
+  );
+
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  const [view, setView] = useState<View>(() => ({ mode: "iso", rot: 1, zoom: 0, cx: 0, cy: 0, ...readView() }));
+  const [hidden, setHidden] = useState<Set<Layer>>(new Set());
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const drag = useRef<Drag | null>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ dist: number; zoom: number } | null>(null);
+
+  const pj = useMemo(() => makeProjector(view.mode, view.rot, site), [view.mode, view.rot, site]);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setSize({ w: Math.max(200, entry.contentRect.width), h: Math.max(200, entry.contentRect.height) }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // First visit (or a forgotten view): fit the lot to the screen.
+  useEffect(() => {
+    if (view.zoom === 0 && size.w) setView((v) => ({ ...v, ...fitView(pj, size.w, size.h) }));
+  }, [view.zoom, pj, size.w, size.h]);
+
+  useEffect(() => {
+    if (view.zoom) writeView(view);
+  }, [view]);
+
+  const toScreen = useCallback((sx: number, sy: number): [number, number] => [(sx - view.cx) * view.zoom + size.w / 2, (sy - view.cy) * view.zoom + size.h / 2], [view, size]);
+  const toScene = useCallback((px: number, py: number): [number, number] => [(px - size.w / 2) / view.zoom + view.cx, (py - size.h / 2) / view.zoom + view.cy], [view, size]);
+
+  const zoomAt = useCallback(
+    (px: number, py: number, factor: number) =>
+      setView((v) => {
+        const zoom = clampZoom(v.zoom * factor);
+        // Keep the scene point under the cursor where it is.
+        const sx = (px - size.w / 2) / v.zoom + v.cx;
+        const sy = (py - size.h / 2) / v.zoom + v.cy;
+        return { ...v, zoom, cx: sx - (px - size.w / 2) / zoom, cy: sy - (py - size.h / 2) / zoom };
+      }),
+    [size],
+  );
+
+  // Wheel zoom needs a non-passive listener to stop the page scrolling.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault();
+      const r = el.getBoundingClientRect();
+      zoomAt(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-ev.deltaY * (ev.ctrlKey ? 0.01 : 0.0015)));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [zoomAt]);
+
+  /** Changes the projection while keeping the same spot of ground in the middle of the screen. */
+  const reproject = (mode: ViewMode, rot: Rot) => {
+    const [wx, wy] = pj.unproject(view.cx, view.cy);
+    const next = makeProjector(mode, rot, site);
+    const [cx, cy] = next.p(wx, wy);
+    setView((v) => ({ ...v, mode, rot, cx, cy }));
+  };
+
+  const entities = useMemo(() => {
+    const list = data.mapEntities.map((e) => (draft && draft.id === e.id ? { ...e, ...draft } : e)).filter((e) => !hidden.has(kindDef(e.kind).layer));
+    const flat = list.filter((e) => kindDef(e.kind).flat).sort((a, b) => LAYERS[kindDef(a.kind).layer].order - LAYERS[kindDef(b.kind).layer].order || b.w * b.d - a.w * a.d);
+    const key = (e: MapEntity) => (pj.mode === "plan" ? e.z + e.h : pj.depth(e.x + e.w / 2, e.y + e.d / 2, e.z));
+    const solid = list.filter((e) => !kindDef(e.kind).flat).sort((a, b) => key(a) - key(b));
+    return [...flat, ...solid];
+  }, [data.mapEntities, draft, hidden, pj]);
+
+  const selected = entities.find((e) => e.id === selectedId) ?? null;
+
+  // ---------- Pointer handling ----------
+
+  const localPoint = (ev: { clientX: number; clientY: number }) => {
+    const r = svgRef.current!.getBoundingClientRect();
+    return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+  };
+
+  const startDrag = (ev: RPointerEvent, d: Drag) => {
+    svgRef.current?.setPointerCapture(ev.pointerId);
+    drag.current = d;
+  };
+
+  const onPointerDown = (ev: RPointerEvent<SVGSVGElement>) => {
+    // No text selection or native dragging while panning; keep keyboard focus for nudging.
+    ev.preventDefault();
+    svgRef.current?.focus({ preventScroll: true });
+    const pt = localPoint(ev);
+    pointers.current.set(ev.pointerId, pt);
+    if (pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()];
+      pinch.current = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom: view.zoom };
+      drag.current = null;
+      return;
+    }
+    const target = (ev.target as Element).closest("[data-handle], [data-id]");
+    const handle = target?.getAttribute("data-handle");
+    const id = target?.getAttribute("data-id") ?? null;
+    if (handle && selected) {
+      startDrag(ev, { type: "resize", sx: pt.x, sy: pt.y, entity: selected, moved: false });
+    } else if (id && id === selectedId && selected) {
+      startDrag(ev, { type: "move", sx: pt.x, sy: pt.y, entity: selected, moved: false });
+    } else {
+      // Dragging anything that isn't selected pans, so a lawn can't be moved by accident.
+      startDrag(ev, { type: "pan", sx: pt.x, sy: pt.y, view, moved: false, selectId: id });
+    }
+  };
+
+  const onPointerMove = (ev: RPointerEvent<SVGSVGElement>) => {
+    if (!pointers.current.has(ev.pointerId)) return;
+    const pt = localPoint(ev);
+    pointers.current.set(ev.pointerId, pt);
+    if (pinch.current && pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()];
+      const factor = (pinch.current.zoom * (Math.hypot(a.x - b.x, a.y - b.y) / pinch.current.dist)) / view.zoom;
+      zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, factor);
+      return;
+    }
+    const d = drag.current;
+    if (!d) return;
+    const dx = pt.x - d.sx;
+    const dy = pt.y - d.sy;
+    if (!d.moved && Math.hypot(dx, dy) < 4) return;
+    d.moved = true;
+    if (d.type === "pan") {
+      setView({ ...d.view, cx: d.view.cx - dx / d.view.zoom, cy: d.view.cy - dy / d.view.zoom });
+      return;
+    }
+    const [wx, wy] = unprojectDelta(pj, dx / view.zoom, dy / view.zoom);
+    const e = d.entity;
+    const g = site.gridFt;
+    if (d.type === "move") {
+      setDraft({ id: e.id, x: snap(e.x + wx, g), y: snap(e.y + wy, g), w: e.w, d: e.d });
+    } else {
+      const min = Math.max(g, 0.25);
+      setDraft({ id: e.id, x: e.x, y: e.y, w: Math.max(min, snap(e.w + wx, g)), d: Math.max(min, snap(e.d + wy, g)) });
+    }
+  };
+
+  const onPointerUp = (ev: RPointerEvent<SVGSVGElement>) => {
+    pointers.current.delete(ev.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+    if (d.type === "pan") {
+      if (!d.moved) select(d.selectId);
+      return;
+    }
+    if (d.moved && draft) {
+      const { id, ...geom } = draft;
+      act((ctx) => updateMapEntity(ctx, id, geom)).finally(() => setDraft(null));
+    }
+  };
+
+  const onKeyDown = (ev: React.KeyboardEvent) => {
+    if (!selected) return;
+    if (ev.key === "Escape") return select(null);
+    if (ev.key === "Delete" || ev.key === "Backspace") {
+      ev.preventDefault();
+      if (confirm(`Remove ${selected.name} from the map?`)) act((ctx) => deleteMapEntity(ctx, selected.id)).then(() => select(null));
+      return;
+    }
+    // Arrows nudge along the ground grid as it's drawn (diagonals in the isometric view).
+    const dir = ({ ArrowRight: [1, 0], ArrowLeft: [-1, 0], ArrowDown: [0, 1], ArrowUp: [0, -1] } as Record<string, [number, number]>)[ev.key];
+    if (!dir) return;
+    ev.preventDefault();
+    const step = ev.shiftKey ? 1 : Math.max(site.gridFt, 0.25);
+    const [ax, ay] = pj.fromR(dir[0] * step, dir[1] * step);
+    const [bx, by] = pj.fromR(0, 0);
+    act((ctx) => updateMapEntity(ctx, selected.id, { x: selected.x + ax - bx, y: selected.y + ay - by }));
+  };
+
+  // ---------- Adding things ----------
+
+  const add = async (kind: string) => {
+    const [wx, wy] = pj.unproject(view.cx, view.cy);
+    const def = kindDef(kind);
+    const { w, d } = def.defaults;
+    // Ground covers can go anywhere; anything else lands in the nearest clear spot.
+    const taken = def.flat ? [] : data.mapEntities.filter((e) => !kindDef(e.kind).flat);
+    const spot = freeSpot(taken, site, wx, wy, w, d, Math.max(site.gridFt, 0.5));
+    const id = await act((ctx) => addMapEntity(ctx, kind, { x: spot.x + w / 2, y: spot.y + d / 2 }, { x: spot.x, y: spot.y }));
+    if (hidden.has(kindDef(kind).layer)) setHidden((h) => new Set([...h].filter((l) => l !== kindDef(kind).layer)));
+    select(id);
+  };
+
+  /** The zoom buttons zoom in on the selected thing, bringing it to the middle, or else on the middle of the view. */
+  const zoomBy = (factor: number) => {
+    if (!selected) return zoomAt(size.w / 2, size.h / 2, factor);
+    const [cx, cy] = pj.p(selected.x + selected.w / 2, selected.y + selected.d / 2, selected.z);
+    setView((v) => ({ ...v, cx, cy, zoom: clampZoom(v.zoom * factor) }));
+  };
+
+  /** Selects something and brings it into the middle of the view. */
+  const focusOn = (e: MapEntity) => {
+    const [sx, sy] = pj.p(e.x + e.w / 2, e.y + e.d / 2, e.z);
+    setView((v) => ({ ...v, cx: sx, cy: sy }));
+    select(e.id);
+  };
+
+  const empty = data.mapEntities.length === 0;
+  const ctx = { pj, data, today, zoom: view.zoom || 1 };
+  const transform = `translate(${size.w / 2 - view.cx * view.zoom} ${size.h / 2 - view.cy * view.zoom}) scale(${view.zoom || 1})`;
+  const lot: [number, number, number][] = [
+    [0, 0, 0],
+    [site.width, 0, 0],
+    [site.width, site.depth, 0],
+    [0, site.depth, 0],
+  ];
+  const lotPath = lot.map((q, i) => `${i ? "L" : "M"}${pj.p(q[0], q[1], q[2]).join(" ")}`).join(" ") + " Z";
+  const gridStep = view.zoom > 14 ? 1 : view.zoom > 4 ? 5 : 10;
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>Garden map</h1>
+          <p className="sub">The whole lot, house and yards. Drag to pan, scroll or pinch to zoom, tap something to select it, then drag it to move.</p>
+        </div>
+      </div>
+
+      <div className="map-layout">
+        <div className="map-wrap card" ref={wrapRef}>
+          <svg
+            ref={svgRef}
+            className="map-svg"
+            width={size.w}
+            height={size.h}
+            tabIndex={0}
+            role="application"
+            aria-label="Garden map"
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            onKeyDown={onKeyDown}
+          >
+            <MapPatterns />
+            <rect width={size.w} height={size.h} fill="var(--map-bg)" />
+            <g transform={transform}>
+              <path d={lotPath} fill={PAL.paper} stroke={PAL.ink} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+              <Grid pj={pj} site={site} step={gridStep} />
+              {entities.map((e) => (
+                <g key={e.id} data-id={e.id} className={`ent ent-${e.kind}`}>
+                  {drawEntity(e, ctx)}
+                </g>
+              ))}
+              {selected && <Selection pj={pj} e={selected} zoom={view.zoom || 1} resizable={kindDef(selected.kind).resizable ?? false} />}
+            </g>
+            <Labels entities={entities} pj={pj} toScreen={toScreen} zoom={view.zoom} selectedId={selectedId} />
+            <Compass pj={pj} site={site} x={size.w - 34} y={size.h - 34} />
+          </svg>
+
+          <div className="map-toolbar">
+            <div className="seg">
+              <button className={view.mode === "iso" ? "on" : ""} onClick={() => reproject("iso", view.rot)} title="Isometric view">Iso</button>
+              <button className={view.mode === "plan" ? "on" : ""} onClick={() => reproject("plan", view.rot)} title="Top-down plan">Plan</button>
+            </div>
+            <div className="seg">
+              <button onClick={() => reproject(view.mode, ((view.rot + 3) % 4) as Rot)} title="Turn left">⟲</button>
+              <button onClick={() => reproject(view.mode, ((view.rot + 1) % 4) as Rot)} title="Turn right">⟳</button>
+            </div>
+            <div className="seg">
+              <button onClick={() => zoomBy(1 / 1.4)} title="Zoom out">−</button>
+              <button onClick={() => zoomBy(1.4)} title="Zoom in">+</button>
+              <button onClick={() => setView((v) => ({ ...v, ...fitView(pj, size.w, size.h) }))} title="Fit the lot">Fit</button>
+            </div>
+          </div>
+
+          {empty && (
+            <div className="map-empty card">
+              <h3>Lay out your place</h3>
+              <p className="small muted">Start from a typical lot (house, front and back yards, fence, three raised beds, water and power on the side of the house) and drag things to match, or start with an empty {site.width} × {site.depth} ft lot.</p>
+              <div className="row">
+                <button className="primary" onClick={() => act(applySiteTemplate)}>Start from a typical lot</button>
+                <button onClick={() => act((c) => setSite(c, site))}>Empty lot</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <aside className="map-panel stack">
+          {selected ? (
+            <EntityPanel key={selected.id} e={selected} onClose={() => select(null)} onSelect={select} />
+          ) : (
+            <>
+              <section className="card">
+                <h3>Add to the map</h3>
+                <p className="small muted">Added in the middle of the view; drag it into place.</p>
+                {LAYER_KEYS.map((l) => (
+                  <div key={l} className="palette-group">
+                    <div className="small muted">{LAYERS[l].label}</div>
+                    <div className="palette">
+                      {KINDS.filter((k) => k.layer === l).map((k) => (
+                        <button key={k.kind} className="small" onClick={() => add(k.kind)} title={k.description}>
+                          {k.icon} {k.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </section>
+              <section className="card">
+                <h3>Layers</h3>
+                <div className="layer-toggles">
+                  {LAYER_KEYS.map((l) => (
+                    <label key={l} className="check">
+                      <input
+                        type="checkbox"
+                        checked={!hidden.has(l)}
+                        onChange={(ev) => setHidden((h) => { const n = new Set(h); if (ev.target.checked) n.delete(l); else n.add(l); return n; })}
+                      />
+                      {LAYERS[l].label}
+                    </label>
+                  ))}
+                </div>
+              </section>
+              {!empty && (
+                <section className="card">
+                  <details>
+                    <summary>Everything on the map ({data.mapEntities.length})</summary>
+                    <ul className="ent-list">
+                      {[...data.mapEntities]
+                        .sort((a, b) => LAYERS[kindDef(a.kind).layer].order - LAYERS[kindDef(b.kind).layer].order || a.name.localeCompare(b.name))
+                        .map((e) => (
+                          <li key={e.id}>
+                            <button className="ghost small" onClick={() => focusOn(e)}>{kindDef(e.kind).icon} {e.name}</button>
+                          </li>
+                        ))}
+                    </ul>
+                  </details>
+                </section>
+              )}
+              <SitePanel site={site} />
+            </>
+          )}
+        </aside>
+      </div>
+    </>
+  );
+}
+
+// ---------- Map overlays ----------
+
+function Grid({ pj, site, step }: { pj: Projector; site: Site; step: number }) {
+  const lines: string[] = [];
+  for (let x = step; x < site.width; x += step) lines.push(`M${pj.p(x, 0).join(" ")} L${pj.p(x, site.depth).join(" ")}`);
+  for (let y = step; y < site.depth; y += step) lines.push(`M${pj.p(0, y).join(" ")} L${pj.p(site.width, y).join(" ")}`);
+  return <path d={lines.join(" ")} stroke={PAL.ink} strokeOpacity={0.08} strokeWidth={1} vectorEffect="non-scaling-stroke" fill="none" pointerEvents="none" />;
+}
+
+function Selection({ pj, e, zoom, resizable }: { pj: Projector; e: MapEntity; zoom: number; resizable: boolean }) {
+  const ring = (z: number) => [pj.p(e.x, e.y, z), pj.p(e.x + e.w, e.y, z), pj.p(e.x + e.w, e.y + e.d, z), pj.p(e.x, e.y + e.d, z)].map((q, i) => `${i ? "L" : "M"}${q.join(" ")}`).join(" ") + " Z";
+  const [hx, hy] = pj.p(e.x + e.w, e.y + e.d, e.z);
+  return (
+    <g pointerEvents="none">
+      <path d={ring(e.z)} fill={PAL.accent} fillOpacity={0.12} stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeDasharray="6 3" />
+      {pj.mode === "iso" && e.h > 0.5 && <path d={ring(e.z + e.h)} fill="none" stroke={PAL.accent} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+      {resizable && (
+        <circle data-handle="resize" cx={hx} cy={hy} r={7 / zoom} fill="#fff" stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" pointerEvents="all" style={{ cursor: "nwse-resize" }} />
+      )}
+    </g>
+  );
+}
+
+function Labels({ entities, pj, toScreen, zoom, selectedId }: { entities: MapEntity[]; pj: Projector; toScreen: (x: number, y: number) => [number, number]; zoom: number; selectedId: string | null }) {
+  return (
+    <g className="map-labels" pointerEvents="none">
+      {entities.map((e) => {
+        const isArea = e.kind === "area";
+        if (!(e.id === selectedId || isArea || (LABELLED.has(e.kind) && zoom >= 3.5))) return null;
+        const [sx, sy] = isArea ? pj.p(e.x + e.w / 2, e.y + e.d / 2, 0) : pj.p(e.x + e.w / 2, e.y + e.d / 2, e.z + e.h);
+        const [x, y] = toScreen(sx, sy);
+        return (
+          <text key={e.id} x={x} y={isArea ? y : y - 6} className={isArea ? "area-label" : "ent-label"} textAnchor="middle">
+            {e.name}
+          </text>
+        );
+      })}
+    </g>
+  );
+}
+
+function Compass({ pj, site, x, y }: { pj: Projector; site: Site; x: number; y: number }) {
+  const th = (site.northDeg * Math.PI) / 180;
+  const cx = site.width / 2;
+  const cy = site.depth / 2;
+  const [ax, ay] = pj.p(cx, cy);
+  const [bx, by] = pj.p(cx + Math.sin(th), cy - Math.cos(th));
+  const len = Math.hypot(bx - ax, by - ay) || 1;
+  const ux = (bx - ax) / len;
+  const uy = (by - ay) / len;
+  return (
+    <g pointerEvents="none" className="compass">
+      <circle cx={x} cy={y} r={20} fill="#fffaf0" stroke={PAL.ink} strokeOpacity={0.4} />
+      <line x1={x - ux * 13} y1={y - uy * 13} x2={x + ux * 4} y2={y + uy * 4} stroke={PAL.ink} strokeWidth={1.5} />
+      <path d={`M${x + ux * 7} ${y + uy * 7} L${x + ux * 1 - uy * 4} ${y + uy * 1 + ux * 4} L${x + ux * 1 + uy * 4} ${y + uy * 1 - ux * 4} Z`} fill={PAL.ink} />
+      <text x={x + ux * 13} y={y + uy * 13} fontSize={10} fontWeight={700} textAnchor="middle" dominantBaseline="central" fill={PAL.ink}>N</text>
+    </g>
+  );
+}
+
+// ---------- Panels ----------
+
+/** A number input that writes through as you type, and follows the map when you aren't typing in it. */
+function NumField({ label, value, onCommit, step = 0.5, min, unit = "ft" }: { label: string; value: number; onCommit: (v: number) => void; step?: number; min?: number; unit?: string }) {
+  const [text, setText] = useState(String(value));
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setText(String(+value.toFixed(2)));
+  }, [value]);
+  return (
+    <label className="num-field">
+      <span>{label}</span>
+      <input
+        type="number"
+        inputMode="decimal"
+        step={step}
+        min={min}
+        value={text}
+        onFocus={() => (focused.current = true)}
+        onBlur={() => {
+          focused.current = false;
+          setText(String(+value.toFixed(2)));
+        }}
+        onChange={(ev) => {
+          setText(ev.target.value);
+          const v = Number(ev.target.value);
+          if (ev.target.value !== "" && Number.isFinite(v) && (min == null || v >= min)) onCommit(v);
+        }}
+      />
+      {unit && <span className="muted small">{unit}</span>}
+    </label>
+  );
+}
+
+function TextField({ value, onCommit, multiline, placeholder }: { value: string; onCommit: (v: string) => void; multiline?: boolean; placeholder?: string }) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  const commit = () => text !== value && onCommit(text);
+  return multiline ? (
+    <textarea rows={3} value={text} placeholder={placeholder} onChange={(ev) => setText(ev.target.value)} onBlur={commit} />
+  ) : (
+    <input value={text} placeholder={placeholder} onChange={(ev) => setText(ev.target.value)} onBlur={commit} onKeyDown={(ev) => ev.key === "Enter" && commit()} />
+  );
+}
+
+function PropField({ f, value, onCommit }: { f: FieldDef; value: string | number | boolean | null | undefined; onCommit: (v: string | number | boolean) => void }) {
+  if (f.type === "number") return <NumField label={f.label} value={Number(value ?? 0)} step={f.step} min={f.min} unit={f.unit ?? ""} onCommit={onCommit} />;
+  if (f.type === "boolean")
+    return (
+      <label className="check">
+        <input type="checkbox" checked={!!value} onChange={(ev) => onCommit(ev.target.checked)} /> {f.label}
+      </label>
+    );
+  if (f.type === "select")
+    return (
+      <label className="field">
+        <span>{f.label}</span>
+        <select value={String(value ?? "")} onChange={(ev) => onCommit(ev.target.value)}>
+          {f.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </label>
+    );
+  return (
+    <label className="field">
+      <span>{f.label}</span>
+      <TextField value={String(value ?? "")} onCommit={onCommit} />
+    </label>
+  );
+}
+
+function EntityPanel({ e, onClose, onSelect }: { e: MapEntity; onClose: () => void; onSelect: (id: string | null) => void }) {
+  const { data, today, act } = useGarden();
+  const def = kindDef(e.kind);
+  const update = (patch: Partial<MapEntity>) => act((ctx) => updateMapEntity(ctx, e.id, patch));
+  const tray = e.links.trayId ? data.trays.find((t) => t.id === e.links.trayId) : undefined;
+  const species = e.links.speciesId ? data.species.find((s) => s.id === e.links.speciesId) : undefined;
+  const others = data.mapEntities.filter((m) => m.id !== e.id && !kindDef(m.kind).flat).sort((a, b) => a.name.localeCompare(b.name));
+  const plantings = tray ? plantingViews(data, today).filter((p) => p.trayId === tray.id) : [];
+
+  const duplicate = async () => {
+    const id = await act((ctx) =>
+      addMapEntity(ctx, e.kind, { x: 0, y: 0 }, { name: `${e.name} copy`, x: e.x + 1, y: e.y + 1, w: e.w, d: e.d, h: e.h, z: e.z, props: { ...e.props }, notes: e.notes }),
+    );
+    onSelect(id);
+  };
+
+  return (
+    <>
+      <section className="card">
+        <div className="panel-head">
+          <span className="small muted">{def.icon} {def.label}</span>
+          <button className="ghost small" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <label className="field">
+          <span>Name</span>
+          <TextField value={e.name} onCommit={(name) => update({ name: name.trim() || def.defaults.name })} />
+        </label>
+        <div className="num-grid">
+          <NumField label="X" value={e.x} onCommit={(x) => update({ x })} />
+          <NumField label="Y" value={e.y} onCommit={(y) => update({ y })} />
+          {def.resizable && (
+            <>
+              <NumField label="Width" value={e.w} min={0.1} onCommit={(w) => update({ w })} />
+              <NumField label="Depth" value={e.d} min={0.1} onCommit={(d) => update({ d })} />
+            </>
+          )}
+          <NumField label="Height" value={e.h} min={0} onCommit={(h) => update({ h })} />
+          <NumField label="Raised" value={e.z} min={0} onCommit={(z) => update({ z })} />
+        </div>
+        <p className="small muted">{def.description} X runs east from the lot&rsquo;s west edge, Y south from its north edge.</p>
+        {def.fields?.map((f) => <PropField key={f.key} f={f} value={e.props[f.key]} onCommit={(v) => update({ props: { [f.key]: v } })} />)}
+      </section>
+
+      {def.links?.includes("tray") && (
+        <section className="card">
+          <h3>Planter</h3>
+          <select value={e.links.trayId ?? ""} onChange={(ev) => update({ links: { trayId: ev.target.value || null } })}>
+            <option value="">— none —</option>
+            {sortedTrays(data).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          {tray ? (
+            <>
+              <div style={{ marginTop: 10 }}>
+                <TrayGrid tray={tray} plantings={plantings} covers={coverPhotos(data).byPlanting} mini />
+              </div>
+              <p className="small"><Link to={`/trays/${tray.id}`}>Open {tray.name} →</Link></p>
+            </>
+          ) : (
+            <p className="small muted" style={{ marginTop: 8 }}>
+              Link a planter to draw its rows here.{" "}
+              <button className="small" onClick={() => act((ctx) => createPlanterForEntity(ctx, e.id))}>Create a planter for {e.name}</button>
+            </p>
+          )}
+        </section>
+      )}
+
+      {def.links?.includes("species") && (
+        <section className="card">
+          <h3>Plant</h3>
+          <select value={e.links.speciesId ?? ""} onChange={(ev) => update({ links: { speciesId: ev.target.value || null } })}>
+            <option value="">— none —</option>
+            {sortedSpecies(data).map((s) => <option key={s.id} value={s.id}>{s.commonName}{s.variety ? ` (${s.variety})` : ""}</option>)}
+          </select>
+          {species && <p className="small"><Link to={`/plants/${species.id}`}>Open {species.commonName} →</Link></p>}
+        </section>
+      )}
+
+      {def.links?.includes("entity") && (
+        <section className="card">
+          <h3>Belongs to</h3>
+          <select value={e.links.entityId ?? ""} onChange={(ev) => update({ links: { entityId: ev.target.value || null } })}>
+            <option value="">— nothing —</option>
+            {others.map((m) => <option key={m.id} value={m.id}>{kindDef(m.kind).icon} {m.name}</option>)}
+          </select>
+          {e.links.entityId && <p className="small"><button className="ghost small" onClick={() => onSelect(e.links.entityId!)}>Select it →</button></p>}
+        </section>
+      )}
+
+      <section className="card">
+        <h3>Notes</h3>
+        <TextField multiline value={e.notes ?? ""} placeholder="Soil, sun, what's planned here…" onCommit={(v) => update({ notes: v.trim() || null })} />
+        <div className="row" style={{ marginTop: 10 }}>
+          <button className="small" onClick={duplicate}>Duplicate</button>
+          <button
+            className="small danger"
+            onClick={() => confirm(`Remove ${e.name} from the map?`) && act((ctx) => deleteMapEntity(ctx, e.id)).then(() => onSelect(null))}
+          >
+            Remove
+          </button>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function SitePanel({ site }: { site: Site }) {
+  const { act } = useGarden();
+  const save = (patch: Partial<Site>) => act((ctx) => setSite(ctx, { ...site, ...patch }));
+  return (
+    <section className="card">
+      <h3>The lot</h3>
+      <div className="num-grid">
+        <NumField label="Width" value={site.width} min={10} step={1} onCommit={(width) => save({ width })} />
+        <NumField label="Depth" value={site.depth} min={10} step={1} onCommit={(depth) => save({ depth })} />
+        <NumField label="North" value={site.northDeg} step={5} unit="°" onCommit={(northDeg) => save({ northDeg: ((northDeg % 360) + 360) % 360 })} />
+        <NumField label="Snap" value={site.gridFt} min={0} step={0.25} onCommit={(gridFt) => save({ gridFt })} />
+      </div>
+      <p className="small muted">Width runs east–west, depth north–south. North is degrees clockwise from the top of the plan. Snap 0 turns snapping off.</p>
+    </section>
+  );
+}
