@@ -30,8 +30,21 @@ export function newId(): string {
 
 const now = () => new Date().toISOString();
 
-export async function openGardenDb(name = "garden"): Promise<GardenDB> {
-  return openDB(name, DB_VERSION, {
+export type OpenHooks = {
+  /** Another tab still has an older version of the database open, so the upgrade has to wait for it. */
+  blocked?: () => void;
+  /** A newer version of the app in another tab wants to upgrade the database; this connection has been closed. */
+  blocking?: () => void;
+};
+
+export async function openGardenDb(name = "garden", hooks: OpenHooks = {}): Promise<GardenDB> {
+  const db: GardenDB = await openDB(name, DB_VERSION, {
+    blocked: () => hooks.blocked?.(),
+    // Step aside so the other tab's upgrade isn't stuck waiting on this one.
+    blocking: () => {
+      db.close();
+      hooks.blocking?.();
+    },
     upgrade(db, oldVersion) {
       // Each step brings a database from the previous version; new browsers run them all.
       if (oldVersion < 1) {
@@ -44,6 +57,7 @@ export async function openGardenDb(name = "garden"): Promise<GardenDB> {
       if (oldVersion < 2) db.createObjectStore("mapEntities", { keyPath: "id" });
     },
   });
+  return db;
 }
 
 /** Everything in this browser's garden, or null when no garden has been started here yet. */

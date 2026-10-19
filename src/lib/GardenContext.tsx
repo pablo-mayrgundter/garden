@@ -38,10 +38,15 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
   const [, setTick] = useState(0);
 
   const [loaded, setLoaded] = useState(false);
+  /** Waiting on another tab that has an older version of the garden open. */
+  const [blocked, setBlocked] = useState(false);
+  /** A newer version of the app took over the garden in another tab. */
+  const [superseded, setSuperseded] = useState(false);
 
   useEffect(() => {
-    openGardenDb()
+    openGardenDb(undefined, { blocked: () => setBlocked(true), blocking: () => setSuperseded(true) })
       .then(async (d) => {
+        setBlocked(false);
         // Gardens from the first version referenced photos bundled with the site; copy them into this browser.
         const moved = await migrateBundledPhotos(d, async (src) => {
           const res = await fetch(staticUrl(src));
@@ -97,12 +102,44 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
     [db, data, today, gardener, setGardener, act, latest, reload],
   );
 
+  if (superseded)
+    return (
+      <main className="auth-wrap">
+        <div className="card auth-card">
+          <h1>The app was updated</h1>
+          <p className="muted">A newer version of the app opened this garden in another tab. Reload to switch this tab to it.</p>
+          <button className="primary" onClick={() => location.reload()}>Reload</button>
+        </div>
+      </main>
+    );
+  if (error && /VersionError|less than the existing version/i.test(error))
+    return (
+      <main className="auth-wrap">
+        <div className="card auth-card">
+          <h1>This garden is newer than this page</h1>
+          <p className="muted">A newer version of the app has already updated this garden in this browser. Reload to get it.</p>
+          <button className="primary" onClick={() => location.reload()}>Reload</button>
+        </div>
+      </main>
+    );
   if (error)
     return (
       <main className="auth-wrap">
         <div className="card auth-card">
           <h1>Can&rsquo;t open the garden</h1>
           <p className="muted">This browser blocked local storage ({error}). Try a regular (not private) window.</p>
+        </div>
+      </main>
+    );
+  if (blocked && !loaded)
+    return (
+      <main className="auth-wrap">
+        <div className="card auth-card">
+          <h1>Updating the garden…</h1>
+          <p className="muted">
+            This version of the app needs to update how the garden is stored, but the garden is open in another tab or window running an older version.
+            Close or reload that tab and this one will open by itself.
+          </p>
         </div>
       </main>
     );

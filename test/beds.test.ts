@@ -92,3 +92,27 @@ test("a version 1 database upgrades with its data intact", async () => {
   assert.equal(data.trays[0].name, "Seed tray");
   assert.deepEqual(data.mapEntities, []);
 });
+
+test("an upgrade waits for, and reports, a tab still holding the old version", async () => {
+  const name = `blocked-${n++}`;
+  const old = await openDB(name, 1, { upgrade: (db) => void db.createObjectStore("meta") });
+  let blocked = false;
+  const opening = openGardenDb(name, { blocked: () => (blocked = true) });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(blocked, "told that another tab is in the way");
+  old.close();
+  const db = await opening;
+  assert.ok(db.objectStoreNames.contains("mapEntities"));
+  db.close();
+});
+
+test("an open garden steps aside when a newer version needs to upgrade", async () => {
+  const name = `blocking-${n++}`;
+  let steppedAside = false;
+  const db = await openGardenDb(name, { blocking: () => (steppedAside = true) });
+  const newer = await openDB(name, 99);
+  assert.ok(steppedAside);
+  assert.equal(newer.version, 99);
+  newer.close();
+  void db;
+});
