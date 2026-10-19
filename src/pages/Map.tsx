@@ -25,13 +25,18 @@ import {
 import { KINDS, kindDef, type FieldDef } from "@/lib/map/kinds";
 import { DEFAULT_SITE, LAYER_KEYS, LAYERS, type Layer, type MapEntity, type Site } from "@/lib/map/model";
 import { drawEntity, MapPatterns, PAL } from "@/lib/map/render";
+import { CITIES, CITY_REGIONS, nearestCity, parseLatLng } from "@/lib/map/places";
 import { entityShadow, gardenLocation, shadowShape, sunFrom, sunGroundDirection, sunPosition, type SunPosition } from "@/lib/map/sun";
 
 type View = { mode: ViewMode; rot: Rot; zoom: number; cx: number; cy: number };
 type Draft = { id: string; x: number; y: number; w: number; d: number; rot?: number };
 type Drag =
   | { type: "pan"; sx: number; sy: number; view: View; moved: boolean; selectId: string | null }
-  | { type: "move" | "resize" | "rotate"; sx: number; sy: number; entity: MapEntity; moved: boolean };
+  | { type: "move" | "resize" | "rotate"; sx: number; sy: number; entity: MapEntity; moved: boolean }
+  | { type: "compass"; sx: number; sy: number; moved: boolean };
+
+/** Where the compass sits, from the map's bottom-right corner. */
+const COMPASS_INSET = 40;
 
 const VIEW_KEY = "garden.mapView";
 const MIN_ZOOM = 0.8;
@@ -65,7 +70,10 @@ const LABELLED = new Set(["house", "shed", "raised-bed", "in-ground-bed", "herb-
 
 export function MapPage() {
   const { data, today, act } = useGarden();
-  const site: Site = data.garden.site ?? DEFAULT_SITE;
+  const savedSite: Site = data.garden.site ?? DEFAULT_SITE;
+  // While the compass is being turned, north follows it before it's saved.
+  const [northDraft, setNorthDraft] = useState<number | null>(null);
+  const site = useMemo(() => (northDraft == null ? savedSite : { ...savedSite, northDeg: northDraft }), [savedSite, northDraft]);
   const [params, setParams] = useSearchParams();
   const selectedId = params.get("e");
   const select = useCallback(
@@ -204,7 +212,9 @@ export function MapPage() {
     const target = (ev.target as Element).closest("[data-handle], [data-id]");
     const handle = target?.getAttribute("data-handle");
     const id = target?.getAttribute("data-id") ?? null;
-    if ((handle === "resize" || handle === "rotate") && selected) {
+    if (handle === "compass") {
+      startDrag(ev, { type: "compass", sx: pt.x, sy: pt.y, moved: false });
+    } else if ((handle === "resize" || handle === "rotate") && selected) {
       startDrag(ev, { type: handle, sx: pt.x, sy: pt.y, entity: selected, moved: false });
     } else if (id && id === selectedId && selected) {
       startDrag(ev, { type: "move", sx: pt.x, sy: pt.y, entity: selected, moved: false });
@@ -234,6 +244,16 @@ export function MapPage() {
       setView({ ...d.view, cx: d.view.cx - dx / d.view.zoom, cy: d.view.cy - dy / d.view.zoom });
       return;
     }
+    if (d.type === "compass") {
+      // Point the N arrow at the pointer: turn that screen direction back into a direction on the ground.
+      const vx = pt.x - (size.w - COMPASS_INSET);
+      const vy = pt.y - (size.h - COMPASS_INSET);
+      if (Math.hypot(vx, vy) < 6) return;
+      const [gx, gy] = unprojectDelta(pj, vx, vy);
+      const deg = (Math.atan2(gx, -gy) * 180) / Math.PI;
+      setNorthDraft((((Math.round(deg) % 360) + 360) % 360));
+      return;
+    }
     const [wx, wy] = unprojectDelta(pj, dx / view.zoom, dy / view.zoom);
     const e = d.entity;
     const g = site.gridFt;
@@ -258,6 +278,10 @@ export function MapPage() {
     if (!d) return;
     if (d.type === "pan") {
       if (!d.moved) select(d.selectId);
+      return;
+    }
+    if (d.type === "compass") {
+      if (northDraft != null) act((ctx) => setSite(ctx, { ...savedSite, northDeg: northDraft })).finally(() => setNorthDraft(null));
       return;
     }
     if (d.moved && draft) {
@@ -386,7 +410,7 @@ export function MapPage() {
             {shadows && <Sun pj={pj} site={site} sun={sun} toScreen={toScreen} w={size.w} h={size.h} />}
             {night > 0 && <rect width={size.w} height={size.h} fill="#141b3c" fillOpacity={night} pointerEvents="none" />}
             <Labels entities={entities.all} pj={pj} toScreen={toScreen} zoom={view.zoom} selectedId={selectedId} />
-            <Compass pj={pj} site={site} x={size.w - 34} y={size.h - 34} />
+            <Compass pj={pj} site={site} x={size.w - COMPASS_INSET} y={size.h - COMPASS_INSET} turning={northDraft != null} />
           </svg>
 
           <div className="map-toolbar">
@@ -651,7 +675,8 @@ function Labels({ entities, pj, toScreen, zoom, selectedId }: { entities: MapEnt
   );
 }
 
-function Compass({ pj, site, x, y }: { pj: Projector; site: Site; x: number; y: number }) {
+/** Which way north is. Drag it to point the N at true north on your lot; the sun, shadows and bed headings follow. */
+function Compass({ pj, site, x, y, turning }: { pj: Projector; site: Site; x: number; y: number; turning: boolean }) {
   const th = (site.northDeg * Math.PI) / 180;
   const cx = site.width / 2;
   const cy = site.depth / 2;
@@ -660,12 +685,24 @@ function Compass({ pj, site, x, y }: { pj: Projector; site: Site; x: number; y: 
   const len = Math.hypot(bx - ax, by - ay) || 1;
   const ux = (bx - ax) / len;
   const uy = (by - ay) / len;
+  const R = 26;
   return (
-    <g pointerEvents="none" className="compass">
-      <circle cx={x} cy={y} r={20} fill="#fffaf0" stroke={PAL.ink} strokeOpacity={0.4} />
-      <line x1={x - ux * 13} y1={y - uy * 13} x2={x + ux * 4} y2={y + uy * 4} stroke={PAL.ink} strokeWidth={1.5} />
-      <path d={`M${x + ux * 7} ${y + uy * 7} L${x + ux * 1 - uy * 4} ${y + uy * 1 + ux * 4} L${x + ux * 1 + uy * 4} ${y + uy * 1 - ux * 4} Z`} fill={PAL.ink} />
-      <text x={x + ux * 13} y={y + uy * 13} fontSize={10} fontWeight={700} textAnchor="middle" dominantBaseline="central" fill={PAL.ink}>N</text>
+    <g className={`compass ${turning ? "turning" : ""}`} data-handle="compass" style={{ cursor: turning ? "grabbing" : "grab" }}>
+      <title>Drag to point N at true north on your lot</title>
+      <circle cx={x} cy={y} r={R} fill="#fffaf0" stroke={turning ? PAL.accent : PAL.ink} strokeOpacity={turning ? 1 : 0.4} strokeWidth={turning ? 2 : 1} />
+      {[0, 90, 180, 270].map((a) => {
+        const r = (a * Math.PI) / 180;
+        // Ticks for the other compass points, turned with north.
+        const tx = ux * Math.cos(r) - uy * Math.sin(r);
+        const ty = uy * Math.cos(r) + ux * Math.sin(r);
+        return a === 0 ? null : <line key={a} x1={x + tx * (R - 6)} y1={y + ty * (R - 6)} x2={x + tx * (R - 2)} y2={y + ty * (R - 2)} stroke={PAL.ink} strokeOpacity={0.5} strokeWidth={1.5} />;
+      })}
+      <line x1={x - ux * 15} y1={y - uy * 15} x2={x + ux * 5} y2={y + uy * 5} stroke={PAL.ink} strokeWidth={1.5} />
+      <path d={`M${x + ux * 10} ${y + uy * 10} L${x + ux * 2 - uy * 5} ${y + uy * 2 + ux * 5} L${x + ux * 2 + uy * 5} ${y + uy * 2 - ux * 5} Z`} fill="#b23a2e" />
+      <text x={x + ux * 18} y={y + uy * 18} fontSize={11} fontWeight={700} textAnchor="middle" dominantBaseline="central" fill="#b23a2e">N</text>
+      {(turning || site.northDeg !== 0) && (
+        <text x={x} y={y - R - 8} fontSize={11} fontWeight={600} textAnchor="middle" className="compass-deg">{Math.round(site.northDeg)}°</text>
+      )}
     </g>
   );
 }
@@ -864,11 +901,116 @@ function Heading({ e, onCommit }: { e: MapEntity; onCommit: (rot: number) => voi
   );
 }
 
+const PASTE_HINT =
+  "Paste from Google Maps: right-click a spot and click the coordinates to copy them, or copy the page's link. For example @30.1836998,-97.7891487";
+
+/** Where the garden is, for the sun: a city, pasted coordinates, this device's location, or typed numbers. */
+function LocationPicker({ site, save }: { site: Site; save: (patch: Partial<Site>) => Promise<unknown> }) {
+  const [locating, setLocating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pasted, setPasted] = useState("");
+  const guess = gardenLocation(site);
+  const set = site.lat != null && site.lon != null;
+  const city = set ? nearestCity(site.lat!, site.lon!) : null;
+  // Four decimals is about 10 m: plenty for the sun, and no more precise than it needs to be.
+  const round = (v: number) => Math.round(v * 10000) / 10000;
+  const setTo = (lat: number, lon: number) => {
+    setError(null);
+    return save({ lat: round(lat), lon: round(lon) });
+  };
+  const usePasted = (text: string) => {
+    if (!text.trim()) return;
+    const at = parseLatLng(text);
+    if (!at) return setError("Couldn't find coordinates in that. Try the @lat,lng from a Google Maps link.");
+    setTo(at.lat, at.lon).then(() => setPasted(""));
+  };
+  return (
+    <div className="location">
+      <h3>Location</h3>
+      <p className="small">
+        {set ? (
+          <>📍 {city ? `Near ${city.name}` : "Set"} <span className="muted">({site.lat!.toFixed(4)}, {site.lon!.toFixed(4)})</span></>
+        ) : (
+          <span className="muted">Not set: the sun is guessed from your time zone.</span>
+        )}
+      </p>
+      <label className="field">
+        <span>City</span>
+        <select
+          value=""
+          onChange={(e) => {
+            const c = CITIES.find((x) => x.name === e.target.value);
+            if (c) setTo(c.lat, c.lon);
+          }}
+        >
+          <option value="">{city ? city.name : "Choose a city…"}</option>
+          {CITY_REGIONS.map((r) => (
+            <optgroup key={r} label={r}>
+              {CITIES.filter((c) => c.region === r).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </optgroup>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span>
+          Or paste coordinates <span className="hint" title={PASTE_HINT} aria-label={PASTE_HINT}>ⓘ</span>
+        </span>
+        <div className="row">
+          <input
+            value={pasted}
+            placeholder="@30.1836998,-97.7891487"
+            title={PASTE_HINT}
+            onChange={(e) => setPasted(e.target.value)}
+            onPaste={(e) => {
+              const text = e.clipboardData.getData("text");
+              if (parseLatLng(text)) {
+                e.preventDefault();
+                usePasted(text);
+              }
+            }}
+            onKeyDown={(e) => e.key === "Enter" && usePasted(pasted)}
+            style={{ flex: 1, minWidth: 0 }}
+          />
+          <button className="small" type="button" onClick={() => usePasted(pasted)}>Set</button>
+        </div>
+      </label>
+      <div className="num-grid">
+        <NumField label="Lat" value={site.lat ?? guess.lat} step={0.01} unit="°" onCommit={(lat) => setTo(Math.max(-90, Math.min(90, lat)), site.lon ?? guess.lon)} />
+        <NumField label="Lon" value={site.lon ?? guess.lon} step={0.01} unit="°" onCommit={(lon) => setTo(site.lat ?? guess.lat, ((lon + 540) % 360) - 180)} />
+      </div>
+      <div className="row small">
+        <button
+          className="small"
+          type="button"
+          disabled={locating}
+          onClick={() => {
+            if (!navigator.geolocation) return setError("This browser can't share its location.");
+            setLocating(true);
+            setError(null);
+            navigator.geolocation.getCurrentPosition(
+              (p) => {
+                setLocating(false);
+                setTo(p.coords.latitude, p.coords.longitude);
+              },
+              (err) => {
+                setLocating(false);
+                setError(err.message || "Couldn't get the location.");
+              },
+              { timeout: 15000 },
+            );
+          }}
+        >
+          📍 {locating ? "Locating…" : "Use this device's location"}
+        </button>
+      </div>
+      {error && <p className="small error">{error}</p>}
+      <p className="small muted">For the sun and shadows. Kept only in this browser and your garden files, to about 10 m.</p>
+    </div>
+  );
+}
+
 function SitePanel({ site }: { site: Site }) {
   const { act } = useGarden();
-  const [locating, setLocating] = useState(false);
-  const [locError, setLocError] = useState<string | null>(null);
-  const guess = gardenLocation(site);
   const save = (patch: Partial<Site>) => act((ctx) => setSite(ctx, { ...site, ...patch }));
   return (
     <section className="card">
@@ -879,39 +1021,8 @@ function SitePanel({ site }: { site: Site }) {
         <NumField label="North" value={site.northDeg} step={5} unit="°" onCommit={(northDeg) => save({ northDeg: ((northDeg % 360) + 360) % 360 })} />
         <NumField label="Snap" value={site.gridFt} min={0} step={0.25} onCommit={(gridFt) => save({ gridFt })} />
       </div>
-      <p className="small muted">Width runs east–west, depth north–south. North is degrees clockwise from the top of the plan. Snap 0 turns snapping off.</p>
-      <h3>Location</h3>
-      <div className="num-grid">
-        <NumField label="Lat" value={site.lat ?? guess.lat} step={0.01} unit="°" onCommit={(lat) => save({ lat: Math.max(-90, Math.min(90, lat)), lon: site.lon ?? guess.lon })} />
-        <NumField label="Lon" value={site.lon ?? guess.lon} step={0.01} unit="°" onCommit={(lon) => save({ lon: ((lon + 540) % 360) - 180, lat: site.lat ?? guess.lat })} />
-      </div>
-      <div className="row small">
-        <button
-          className="small"
-          disabled={locating}
-          onClick={() => {
-            if (!navigator.geolocation) return setLocError("This browser can't share its location.");
-            setLocating(true);
-            setLocError(null);
-            navigator.geolocation.getCurrentPosition(
-              (p) => {
-                setLocating(false);
-                save({ lat: Math.round(p.coords.latitude * 1000) / 1000, lon: Math.round(p.coords.longitude * 1000) / 1000 });
-              },
-              (err) => {
-                setLocating(false);
-                setLocError(err.message || "Couldn't get the location.");
-              },
-              { timeout: 15000 },
-            );
-          }}
-        >
-          📍 {locating ? "Locating…" : "Use this device's location"}
-        </button>
-        {site.lat == null && <span className="muted">Not set: the sun is approximate.</span>}
-      </div>
-      {locError && <p className="small error">{locError}</p>}
-      <p className="small muted">For the sun and shadows. Rounded to about 100 m, and kept only in this browser and your garden files.</p>
+      <p className="small muted">Width runs east–west, depth north–south. North is degrees clockwise from the top of the plan; or drag the compass on the map. Snap 0 turns snapping off.</p>
+      <LocationPicker site={site} save={save} />
     </section>
   );
 }

@@ -98,7 +98,8 @@ Today's kinds: lawn, path (pavers, stepping stones, gravel, mulch, concrete), pa
 - **Shadows** are cast straight onto the ground: each solid's footprint and top are pushed away from the sun by height ÷ tan(altitude) (capped for a sun at the horizon), and the shadow is the outline around both (`entityShadow`). Kinds choose a shape: boxes; buildings add the roof ridge; trees and shrubs cast a canopy on a trunk; ground covers and areas cast none. Turned entities cast turned shadows. All shadows are one path clipped to the lot, drawn between the ground covers and the solids, so overlaps don't double up.
 - **The sun** is drawn at the edge of the map in the direction of its real place in the sky (out past the lot, raised by its altitude), with its altitude. Below the horizon the scene is shaded for night, fading in through twilight.
 - **The clock** follows the real time by default. Drag through the day or pick a date to move the sun; *Now* goes back to live. The ☀️ box turns sun and shadows off.
-- The lot settings take the latitude and longitude, or *Use this device's location* (rounded to about 100 m).
+- **Location** (lot settings): pick a city from the list (`src/lib/map/places.ts`), paste coordinates (`parseLatLng` reads Google Maps' `@30.1836998,-97.7891487`, whole Google Maps links, preferring a dropped pin's `!3d…!4d…` over the view's center, `30.18, -97.78`, and `30.18° N, 97.78° W`), type latitude and longitude, or use this device's location. It's kept to four decimals (about 10 m).
+- **North**: drag the compass on the map until its N points at true north on your lot (the screen direction is turned back into a ground direction with `unprojectDelta`, so it works in every view and rotation). The sun, shadows and bed headings follow as you drag; it's saved when you let go. The lot settings have the same angle as a number.
 
 ## Interaction
 

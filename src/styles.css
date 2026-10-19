@@ -385,3 +385,6 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .map-clock .live-dot { color: var(--green); font-weight: 600; }
 .map-clock .live-dot::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 4px; vertical-align: 1px; }
 .map-sun .sun-label { font-size: 11px; font-weight: 600; fill: #9a5b0e; paint-order: stroke; stroke: #fffaf0; stroke-width: 3px; }
+.map-panel .location .hint { cursor: help; color: var(--blue); font-weight: 600; }
+.map-panel .location .row { flex-wrap: nowrap; }
+.compass .compass-deg { fill: #b23a2e; paint-order: stroke; stroke: #fffaf0; stroke-width: 3px; }
