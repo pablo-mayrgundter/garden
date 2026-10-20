@@ -378,6 +378,12 @@ export async function applySiteTemplate(ctx: ActionCtx) {
   await putRecords(ctx.db, "mapEntities", t.entities);
 }
 
+/** Applies geometry that follows from a kind's settings (a house's height from its stories). */
+function withDerived(e: MapEntity): MapEntity {
+  const derive = kindDef(e.kind).derive;
+  return derive ? { ...e, ...derive(e) } : e;
+}
+
 export async function addMapEntity(ctx: ActionCtx, kind: string, at: { x: number; y: number }, overrides: Partial<MapEntity> = {}): Promise<string> {
   const def = kindDef(kind).defaults;
   const e: MapEntity = {
@@ -398,7 +404,7 @@ export async function addMapEntity(ctx: ActionCtx, kind: string, at: { x: number
     x: overrides.x ?? Math.round((at.x - def.w / 2) * 2) / 2,
     y: overrides.y ?? Math.round((at.y - def.d / 2) * 2) / 2,
   };
-  await putRecords(ctx.db, "mapEntities", [e]);
+  await putRecords(ctx.db, "mapEntities", [withDerived(e)]);
   return e.id;
 }
 
@@ -412,7 +418,7 @@ export async function updateMapEntity(ctx: ActionCtx, id: string, patch: Partial
     patch = { ...patch, w: alongX ? linked.size.length : linked.size.width, d: alongX ? linked.size.width : linked.size.length };
   }
   await putRecords(ctx.db, "mapEntities", [
-    { ...e, ...patch, props: { ...e.props, ...(patch.props ?? {}) }, links: { ...e.links, ...(patch.links ?? {}) }, updatedAt: now() },
+    withDerived({ ...e, ...patch, props: { ...e.props, ...(patch.props ?? {}) }, links: { ...e.links, ...(patch.links ?? {}) }, updatedAt: now() }),
   ]);
 }
 

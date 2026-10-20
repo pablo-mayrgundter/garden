@@ -62,7 +62,25 @@ export type MapEntity = {
   rot?: number;
   props: Record<string, string | number | boolean | null>;
   links: MapLinks;
+  /** Doors and windows in a building's walls (see openings.ts). Absent means the kind's defaults. */
+  openings?: Opening[];
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Which wall of a box, before it's turned: n is the y = top edge, s the bottom, w the x = left edge, e the right. */
+export type Wall = "n" | "e" | "s" | "w";
+
+/** A door or window in a wall. Positions are in feet, in the building's own (unturned) frame. */
+export type Opening = {
+  id: string;
+  type: "window" | "door" | "garage";
+  wall: Wall;
+  /** From the wall's west end (n and s walls) or north end (e and w walls) to the opening's near side. */
+  offset: number;
+  width: number;
+  height: number;
+  /** Height of the opening's bottom above the ground (a window's sill; 0 for most doors). */
+  bottom: number;
 };

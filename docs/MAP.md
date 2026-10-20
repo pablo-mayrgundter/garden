@@ -40,6 +40,7 @@ type MapEntity = {
   rot?: number;              // turn about the center, degrees clockwise on the plan (0 = square to the lot)
   props: Record<string, string | number | boolean | null>;  // kind-specific settings
   links: { trayId?, speciesId?, entityId? };                 // ties to the rest of the garden
+  openings?: Opening[];      // doors and windows, for buildings (absent: the kind's defaults)
   notes: string | null;
   createdAt: string; updatedAt: string;
 };
@@ -75,7 +76,22 @@ Entities live in their own IndexedDB store, `mapEntities` (database version 2), 
 
 Layers group kinds for drawing order, the add palette and show/hide: ground & paths, house & structures, beds & plants, water & power, irrigation, automation, areas & labels.
 
-Today's kinds: lawn, path (pavers, stepping stones, gravel, mulch, concrete), patio, driveway, mulch bed; house, shed, fence (privacy, picket, wire), gate, trellis, netting; raised bed, in-ground bed, herb garden, seed station, fruit tree, tree, shrub, hedge, container, compost; water spigot, power outlet, meter, AC unit, rain barrel; irrigation valve, sprinkler (spray radius, zone), drip line; robot gantry (planned or installed), robot dock, sensor; area (a named region such as "Front yard").
+Today's kinds: lawn, path (pavers, stepping stones, gravel, mulch, concrete), patio, driveway, mulch bed; house (stories, story height, roof rise), shed, fence (privacy, picket, wire), gate, trellis, netting, in-ground pool, above-ground pool, hot tub (rounded rectangles with a corner radius); raised bed, in-ground bed, herb garden, seed station, fruit tree, tree, shrub, hedge, container, compost; water spigot, power outlet, meter, AC unit, rain barrel; irrigation valve, sprinkler (spray radius, zone), drip line; robot gantry (planned or installed), robot dock, sensor; area (a named region such as "Front yard").
+
+A kind can also say:
+
+- `round`: round in plan, like a tree's canopy. The panel shows one *Spread* instead of width and depth, and resizing keeps it round.
+- `derive`: geometry that follows from its settings, applied on every change. A house's wall height is stories × story height, so the panel shows the walls and ridge instead of a height field. A house drawn before stories existed keeps its height: its story height falls back to height ÷ stories.
+- `openings`: it has doors and windows (house, shed).
+- A field's `value`: what to show when the setting isn't stored. A tree's *Clear trunk* (where the canopy starts, used for drawing and shadows) defaults to a share of its height (`treeTrunk`).
+
+### Doors and windows
+
+`src/lib/map/openings.ts`. Each opening is `{ id, type: "window" | "door" | "garage", wall: "n" | "e" | "s" | "w", offset, width, height, bottom }`. These are in feet, in the building's own unturned frame. `offset` runs from the wall's west end (n and s walls) or north end (e and w walls), and `bottom` is the height above the ground.
+
+- **Defaults:** a building without `openings` gets `defaultOpenings`. On a house that's a front door centered on the south wall, a back door on the north wall, and windows about every 8 ft on every story, kept clear of the doors. A shed gets a door. The first edit stores the list, and from then on it's yours.
+- **Drawing:** openings are drawn on the walls facing the viewer, with floor lines between stories. From above, they're marked along the eaves.
+- **Editing:** selecting a building shows a W, D or G tab on the ground outside each opening. Dragging a tab slides it to the nearest spot on the nearest wall (`placeOpening`), round corners too. Delete removes the selected opening. The panel lists them by wall (named by the compass), with position, width, height and height off the ground, and adds new ones in the widest free stretch of a wall (`newOpening`).
 
 ### Adding a kind
 

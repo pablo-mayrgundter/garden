@@ -8,8 +8,10 @@ import { layoutBed } from "../bedLayout.ts";
 import { plantStates } from "../garden.ts";
 import { speciesColor } from "../plantColors.ts";
 import type { GardenData, Planting } from "../types.ts";
-import { boxFaces, entityProjector, orderFaces, pathOf, type Face, type Projector, type Vec3 } from "./geometry.ts";
-import type { MapEntity } from "./model.ts";
+import { boxFaces, entityProjector, orderFaces, pathOf, roundedRect, type Face, type Projector, type Vec3 } from "./geometry.ts";
+import { treeTrunk } from "./kinds.ts";
+import type { MapEntity, Opening } from "./model.ts";
+import { buildingOpenings, houseStories, wallLine, WALLS } from "./openings.ts";
 
 export const PAL = {
   ink: "#4a3a28",
@@ -105,6 +107,8 @@ export type DrawCtx = {
   zoom: number;
   /** Real sun shadows are drawn, so drawers skip their own soft ground shadows. */
   sunShadows?: boolean;
+  /** The door or window being edited, drawn highlighted. */
+  selectedOpening?: string | null;
 };
 
 const ink = { stroke: PAL.ink, strokeWidth: 1, vectorEffect: "non-scaling-stroke" as const, strokeLinejoin: "round" as const };
@@ -147,7 +151,44 @@ const wallFill = { top: PAL.wall, sideX: PAL.wallSide, sideY: PAL.wallSide2 };
 const metalFill = { top: PAL.metal, sideX: PAL.metalDark, sideY: PAL.metal };
 
 /** House or shed: walls, windows on the walls facing you, and a gable roof along the long side. */
-function Building(e: MapEntity, { pj }: DrawCtx, windows: boolean) {
+const OPENING_COLOR: Record<Opening["type"], string> = { window: "#5d9cc4", door: "#8b5a3c", garage: "#9c968a" };
+
+/** A door or window drawn on its wall, just proud of it. */
+function OpeningOnWall({ e, o, pj, selected }: { e: MapEntity; o: Opening; pj: Projector; selected: boolean }) {
+  const l = wallLine(e, o.wall);
+  const out = 0.03;
+  const at = (along: number, z: number): Vec3 => [l.x + l.dx * along + l.nx * out, l.y + l.dy * along + l.ny * out, z];
+  const a = o.offset;
+  const b = o.offset + o.width;
+  const z0 = o.bottom;
+  const z1 = o.bottom + o.height;
+  const quad: Vec3[] = [at(a, z0), at(b, z0), at(b, z1), at(a, z1)];
+  const line = (p: Vec3, q: Vec3, key: string, w = 0.8) => {
+    const [px, py] = pj.p(...p);
+    const [qx, qy] = pj.p(...q);
+    return <line key={key} x1={px} y1={py} x2={qx} y2={qy} stroke={PAL.ink} strokeOpacity={0.6} strokeWidth={w} vectorEffect="non-scaling-stroke" />;
+  };
+  const detail: ReactNode[] = [];
+  if (o.type === "window") {
+    const m = (a + b) / 2;
+    detail.push(line(at(m, z0), at(m, z1), "m"), line(at(a, (z0 + z1) / 2), at(b, (z0 + z1) / 2), "t"));
+  } else if (o.type === "garage") {
+    for (let i = 1; i < 4; i++) detail.push(line(at(a, z0 + (o.height * i) / 4), at(b, z0 + (o.height * i) / 4), `p${i}`));
+  } else {
+    const [kx, ky] = pj.p(...at(a + o.width * 0.82, z0 + o.height * 0.48));
+    detail.push(<circle key="k" cx={kx} cy={ky} r={0.12} fill="#e2c37a" />);
+  }
+  const fill = o.type === "window" ? PAL.window : o.type === "door" ? "#8b5a3c" : "#ece6d8";
+  return (
+    <g>
+      <path d={pathOf(pj, quad)} fill={fill} stroke={selected ? PAL.accent : PAL.ink} strokeWidth={selected ? 2.5 : 1} vectorEffect="non-scaling-stroke" />
+      {detail}
+    </g>
+  );
+}
+
+function Building(e: MapEntity, ctx: DrawCtx, withStories: boolean) {
+  const { pj } = ctx;
   const rise = Number(e.props.roofRise ?? 6);
   const h = e.h;
   const o = 0.8; // roof overhang
@@ -172,15 +213,32 @@ function Building(e: MapEntity, { pj }: DrawCtx, windows: boolean) {
     );
   }
   const extras: ReactNode[] = [];
-  if (windows && pj.mode === "iso") {
-    const wins: Face[] = [];
-    const along = (len: number) => Array.from({ length: Math.max(0, Math.floor((len - 4) / 8)) }, (_, i) => 4 + i * 8 + ((len - 4) % 8) / 2);
-    const winH: [number, number] = [3, Math.min(h - 2, 7)];
-    if (facesViewer(pj, 0, 1)) for (const a of along(e.w)) wins.push({ pts: [[e.x + a, e.y + e.d, winH[0]], [e.x + a + 3, e.y + e.d, winH[0]], [e.x + a + 3, e.y + e.d, winH[1]], [e.x + a, e.y + e.d, winH[1]]], fill: PAL.window });
-    if (facesViewer(pj, 0, -1)) for (const a of along(e.w)) wins.push({ pts: [[e.x + a, e.y, winH[0]], [e.x + a + 3, e.y, winH[0]], [e.x + a + 3, e.y, winH[1]], [e.x + a, e.y, winH[1]]], fill: PAL.window });
-    if (facesViewer(pj, 1, 0)) for (const a of along(e.d)) wins.push({ pts: [[e.x + e.w, e.y + a, winH[0]], [e.x + e.w, e.y + a + 3, winH[0]], [e.x + e.w, e.y + a + 3, winH[1]], [e.x + e.w, e.y + a, winH[1]]], fill: PAL.window });
-    if (facesViewer(pj, -1, 0)) for (const a of along(e.d)) wins.push({ pts: [[e.x, e.y + a, winH[0]], [e.x, e.y + a + 3, winH[0]], [e.x, e.y + a + 3, winH[1]], [e.x, e.y + a, winH[1]]], fill: PAL.window });
-    extras.push(...wins.map((f, i) => <path key={`w${i}`} d={pathOf(pj, f.pts)} fill={f.fill} {...ink} />));
+  const marks: ReactNode[] = [];
+  const openings = buildingOpenings(e);
+  if (pj.mode === "iso") {
+    // Floor lines between stories, on the walls facing you.
+    const { stories, storyHeight } = houseStories(e);
+    for (const wall of WALLS) {
+      const l = wallLine(e, wall);
+      if (!facesViewer(pj, l.nx, l.ny)) continue;
+      for (let s = 1; s < stories && withStories; s++) {
+        const z = s * storyHeight;
+        extras.push(<path key={`f${wall}${s}`} d={pathOf(pj, [[l.x, l.y, z], [l.x + l.dx * l.length, l.y + l.dy * l.length, z]])} stroke={PAL.ink} strokeOpacity={0.35} strokeWidth={1} vectorEffect="non-scaling-stroke" fill="none" />);
+      }
+      for (const o of openings.filter((x) => x.wall === wall)) extras.push(<OpeningOnWall key={o.id} e={e} o={o} pj={pj} selected={o.id === ctx.selectedOpening} />);
+    }
+  }
+  if (pj.mode === "plan") {
+    // From above, openings are marked along the eaves of their walls.
+    for (const o of openings) {
+      const l = wallLine(e, o.wall);
+      const a = [l.x + l.dx * o.offset, l.y + l.dy * o.offset] as const;
+      const b = [l.x + l.dx * (o.offset + o.width), l.y + l.dy * (o.offset + o.width)] as const;
+      const [ax, ay] = pj.p(a[0], a[1], h);
+      const [bx, by] = pj.p(b[0], b[1], h);
+      const sel = o.id === ctx.selectedOpening;
+      marks.push(<line key={o.id} x1={ax} y1={ay} x2={bx} y2={by} stroke={sel ? PAL.accent : OPENING_COLOR[o.type]} strokeWidth={sel ? 6 : 4} strokeLinecap="butt" vectorEffect="non-scaling-stroke" />);
+    }
   }
   // Walls first, then windows on them, then the roof over everything.
   const ordered = orderFaces(pj, faces);
@@ -191,6 +249,7 @@ function Building(e: MapEntity, { pj }: DrawCtx, windows: boolean) {
       <Faces pj={pj} faces={walls} />
       {extras}
       {roof.map((f, i) => <path key={`r${i}`} d={pathOf(pj, f.pts)} fill={f.fill} {...ink} />)}
+      {marks}
     </>
   );
 }
@@ -272,12 +331,12 @@ function Bed(e: MapEntity, ctx: DrawCtx) {
   );
 }
 
-function Canopy(e: MapEntity, ctx: DrawCtx, opts: { trunk: number; fruit?: string }) {
+function Canopy(e: MapEntity, ctx: DrawCtx, opts: { fruit?: string } = {}) {
   const { pj } = ctx;
   const cx = e.x + e.w / 2;
   const cy = e.y + e.d / 2;
   const rad = Math.min(e.w, e.d) / 2;
-  const trunkTop = e.h * opts.trunk;
+  const trunkTop = treeTrunk(e);
   const centerZ = pj.mode === "iso" ? trunkTop + (e.h - trunkTop) / 2 : 0;
   const [sx, sy] = pj.p(cx, cy, centerZ);
   const [gx, gy] = pj.p(cx, cy, 0);
@@ -292,7 +351,7 @@ function Canopy(e: MapEntity, ctx: DrawCtx, opts: { trunk: number; fruit?: strin
   return (
     <>
       {pj.mode === "iso" && !ctx.sunShadows && <ellipse cx={gx} cy={gy} rx={rad * 0.9} ry={rad * 0.45} fill="#000" opacity={0.08} />}
-      {opts.trunk > 0 && pj.mode === "iso" && (
+      {trunkTop > 0 && pj.mode === "iso" && (
         <path d={`M${gx - 0.25} ${gy} L${gx - 0.2} ${pj.p(cx, cy, trunkTop)[1]} L${gx + 0.2} ${pj.p(cx, cy, trunkTop)[1]} L${gx + 0.25} ${gy} Z`} fill={PAL.trunk} {...ink} />
       )}
       {blobs.map((b, i) => (
@@ -461,6 +520,61 @@ function SeedStation(e: MapEntity, ctx: DrawCtx) {
   );
 }
 
+const WATER = "#5fb0d8";
+
+function waterRipples(e: MapEntity, pj: Projector, z: number, inset: number): ReactNode {
+  const lines: ReactNode[] = [];
+  const n = Math.max(2, Math.round(Math.max(e.w, e.d) / 6));
+  for (let i = 1; i <= n; i++) {
+    const t = i / (n + 1);
+    const along = e.w >= e.d;
+    const ax = along ? e.x + inset + (e.w - inset * 2) * t : e.x + e.w * 0.3;
+    const ay = along ? e.y + e.d * 0.3 : e.y + inset + (e.d - inset * 2) * t;
+    const bx = along ? ax + 1.2 : e.x + e.w * 0.55;
+    const by = along ? e.y + e.d * 0.55 : ay + 1.2;
+    const [px, py] = pj.p(ax, ay, z);
+    const [qx, qy] = pj.p(bx, by, z);
+    lines.push(<line key={i} x1={px} y1={py} x2={qx} y2={qy} stroke="#fff" strokeOpacity={0.55} strokeWidth={1.2} strokeLinecap="round" vectorEffect="non-scaling-stroke" />);
+  }
+  return lines;
+}
+
+/** In-ground pool: a coping around the water, set into the ground. */
+function InGroundPool(e: MapEntity, { pj }: DrawCtx) {
+  const r = Number(e.props.corner ?? 3);
+  const coping = 1;
+  return (
+    <>
+      <path d={pathOf(pj, roundedRect(e, r, 0.02))} fill={PAL.concrete} {...ink} />
+      <path d={pathOf(pj, roundedRect(e, r, 0.03, coping))} fill="#2f7fa8" {...ink} strokeWidth={0.8} />
+      <path d={pathOf(pj, roundedRect(e, r, 0.035, coping + 0.35))} fill={WATER} stroke="none" />
+      {waterRipples(e, pj, 0.04, coping + 1)}
+    </>
+  );
+}
+
+/** Above-ground pool or hot tub: rounded walls, a rim, and the water just below it. */
+function RaisedWater(e: MapEntity, { pj }: DrawCtx, c: { side: string; sideDark: string; rim: string }) {
+  const r = Number(e.props.corner ?? 2);
+  const base = roundedRect(e, r, e.z);
+  const top = roundedRect(e, r, e.z + e.h);
+  const sides: Face[] = base.map((p, i) => {
+    const q = base[(i + 1) % base.length];
+    const dark = Math.abs(q[0] - p[0]) < Math.abs(q[1] - p[1]);
+    const fill = dark ? c.sideDark : c.side;
+    return { pts: [p, q, top[(i + 1) % top.length], top[i]], fill, stroke: fill };
+  });
+  const rimW = Math.min(0.6, Math.min(e.w, e.d) * 0.08);
+  return (
+    <>
+      <Faces pj={pj} faces={sides} />
+      <path d={pathOf(pj, top)} fill={c.rim} {...ink} />
+      <path d={pathOf(pj, roundedRect(e, r, e.z + e.h - 0.25, rimW))} fill={WATER} {...ink} strokeWidth={0.6} />
+      {waterRipples(e, pj, e.z + e.h - 0.24, rimW + 0.6)}
+    </>
+  );
+}
+
 type Drawer = (e: MapEntity, ctx: DrawCtx) => ReactNode;
 
 export const DRAWERS: Record<string, Drawer> = {
@@ -484,9 +598,12 @@ export const DRAWERS: Record<string, Drawer> = {
     </>
   ),
   "seed-station": SeedStation,
-  "fruit-tree": (e, ctx) => Canopy(e, ctx, { trunk: 0.35, fruit: String(e.props.fruit ?? "#c0392b") }),
-  tree: (e, ctx) => Canopy(e, ctx, { trunk: 0.4 }),
-  shrub: (e, ctx) => Canopy(e, ctx, { trunk: 0 }),
+  "fruit-tree": (e, ctx) => Canopy(e, ctx, { fruit: String(e.props.fruit ?? "#c0392b") }),
+  tree: (e, ctx) => Canopy(e, ctx),
+  shrub: (e, ctx) => Canopy(e, ctx),
+  pool: InGroundPool,
+  "above-ground-pool": (e, ctx) => RaisedWater(e, ctx, { side: "#7fa7c4", sideDark: "#5f87a4", rim: "#dfe8ee" }),
+  "hot-tub": (e, ctx) => RaisedWater(e, ctx, { side: "#b48f5c", sideDark: "#8d6b40", rim: "#cdbb9c" }),
   hedge: (e, { pj }) => <Faces pj={pj} faces={box(e, { top: "url(#pat-foliage)", sideX: PAL.foliageDark, sideY: PAL.foliage })} />,
   container: (e, ctx) => (
     <>

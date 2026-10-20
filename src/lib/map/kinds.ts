@@ -4,7 +4,8 @@
 // render.tsx. To add a kind, add an entry here and (optionally) a drawer there;
 // without a drawer it draws as a plain box. See docs/MAP.md.
 
-import type { Layer } from "./model.ts";
+import type { Layer, MapEntity } from "./model.ts";
+import { houseStories } from "./openings.ts";
 
 export type FieldDef = {
   key: string;
@@ -14,6 +15,8 @@ export type FieldDef = {
   unit?: string;
   step?: number;
   min?: number;
+  /** What to show when the setting isn't stored (a tree's trunk worked out from its height). */
+  value?: (e: MapEntity) => number;
 };
 
 export type LinkKind = "tray" | "species" | "entity";
@@ -31,7 +34,25 @@ export type KindDef = {
   flat?: boolean;
   /** Can be resized freely; points like an outlet keep their size. */
   resizable?: boolean;
+  /** Round in plan (a tree's canopy): one "spread" instead of width and depth. */
+  round?: boolean;
+  /** Has doors and windows (see openings.ts). */
+  openings?: boolean;
+  /** Geometry that follows from the kind's settings (a house's height from its stories); applied on every change. */
+  derive?: (e: Pick<MapEntity, "props" | "h">) => Partial<Pick<MapEntity, "h">>;
 };
+
+const TRUNK_FIELD: FieldDef = { key: "trunkHeight", label: "Clear trunk", type: "number", unit: "ft", step: 0.5, min: 0, value: (e) => treeTrunk(e) };
+
+/** How much of a tree's height is bare trunk below the canopy, when not set. */
+const TRUNK_SHARE: Record<string, number> = { tree: 0.4, "fruit-tree": 0.35, shrub: 0 };
+
+/** Height of a tree's clear trunk (the bottom of its canopy), in feet. */
+export function treeTrunk(e: Pick<MapEntity, "kind" | "h" | "props">): number {
+  const set = e.props.trunkHeight;
+  const v = set != null && set !== "" ? Number(set) : e.h * (TRUNK_SHARE[e.kind] ?? 0.3);
+  return Math.max(0, Math.min(e.h * 0.9, v));
+}
 
 const opts = (...values: string[]) => values.map((v) => ({ value: v, label: v[0].toUpperCase() + v.slice(1) }));
 
@@ -60,11 +81,30 @@ export const KINDS: KindDef[] = [
     icon: "🏠",
     layer: "structure",
     resizable: true,
-    description: "The house: walls and a gable roof along its long side.",
-    defaults: { name: "House", w: 40, d: 32, h: 10, props: { roofRise: 7 } },
-    fields: [{ key: "roofRise", label: "Roof rise", type: "number", unit: "ft", step: 0.5, min: 0 }],
+    description: "The house: stories of walls, doors and windows, and a gable roof along its long side.",
+    defaults: { name: "House", w: 40, d: 32, h: 10, props: { stories: 1, storyHeight: 10, roofRise: 7 } },
+    fields: [
+      { key: "stories", label: "Stories", type: "number", step: 1, min: 1, value: (e) => houseStories(e).stories },
+      { key: "storyHeight", label: "Story height", type: "number", unit: "ft", step: 0.5, min: 6, value: (e) => houseStories(e).storyHeight },
+      { key: "roofRise", label: "Roof rise", type: "number", unit: "ft", step: 0.5, min: 0 },
+    ],
+    openings: true,
+    derive: (e) => {
+      const { stories, storyHeight } = houseStories(e);
+      return { h: stories * storyHeight };
+    },
   },
-  { kind: "shed", label: "Shed", icon: "🛖", layer: "structure", resizable: true, description: "Shed or outbuilding.", defaults: { name: "Shed", w: 8, d: 6, h: 7, props: { roofRise: 2 } }, fields: [{ key: "roofRise", label: "Roof rise", type: "number", unit: "ft", step: 0.5, min: 0 }] },
+  {
+    kind: "shed",
+    label: "Shed",
+    icon: "🛖",
+    layer: "structure",
+    resizable: true,
+    description: "Shed or outbuilding.",
+    defaults: { name: "Shed", w: 8, d: 6, h: 7, props: { roofRise: 2 } },
+    fields: [{ key: "roofRise", label: "Roof rise", type: "number", unit: "ft", step: 0.5, min: 0 }],
+    openings: true,
+  },
   {
     kind: "fence",
     label: "Fence",
@@ -117,16 +157,64 @@ export const KINDS: KindDef[] = [
     icon: "🍎",
     layer: "growing",
     resizable: true,
-    description: "Fruit tree; the box is its canopy spread and height.",
+    description: "Fruit tree: its height, the clear trunk below the canopy, and the canopy's spread.",
     defaults: { name: "Fruit tree", w: 10, d: 10, h: 14, props: { fruit: "#c0392b" } },
-    fields: [{ key: "fruit", label: "Fruit color", type: "text" }],
+    fields: [TRUNK_FIELD, { key: "fruit", label: "Fruit color", type: "text" }],
     links: ["species"],
+    round: true,
   },
-  { kind: "tree", label: "Tree", icon: "🌳", layer: "growing", resizable: true, description: "Shade or ornamental tree.", defaults: { name: "Tree", w: 18, d: 18, h: 28 }, links: ["species"] },
-  { kind: "shrub", label: "Shrub", icon: "🌳", layer: "growing", resizable: true, description: "Shrub or bush.", defaults: { name: "Shrub", w: 6, d: 6, h: 6 }, links: ["species"] },
+  {
+    kind: "tree",
+    label: "Tree",
+    icon: "🌳",
+    layer: "growing",
+    resizable: true,
+    description: "Shade or ornamental tree: its height, the clear trunk below the canopy, and the canopy's spread.",
+    defaults: { name: "Tree", w: 18, d: 18, h: 28 },
+    fields: [TRUNK_FIELD],
+    links: ["species"],
+    round: true,
+  },
+  { kind: "shrub", label: "Shrub", icon: "🌳", layer: "growing", resizable: true, description: "Shrub or bush.", defaults: { name: "Shrub", w: 6, d: 6, h: 6 }, fields: [TRUNK_FIELD], links: ["species"], round: true },
   { kind: "hedge", label: "Hedge", icon: "🟢", layer: "growing", resizable: true, description: "Hedge run; keep it low enough not to shade beds.", defaults: { name: "Hedge", w: 16, d: 2.5, h: 4 }, links: ["species"] },
   { kind: "container", label: "Container", icon: "🪴", layer: "growing", resizable: true, description: "Pot or tub.", defaults: { name: "Pot", w: 2, d: 2, h: 1.5 }, links: ["species", "tray"] },
   { kind: "compost", label: "Compost", icon: "♻️", layer: "growing", resizable: true, description: "Compost bin or pile.", defaults: { name: "Compost", w: 4, d: 4, h: 3 } },
+
+  // Pools & spas (rounded rectangles)
+  {
+    kind: "pool",
+    label: "In-ground pool",
+    icon: "🏊",
+    layer: "structure",
+    flat: true,
+    resizable: true,
+    description: "In-ground pool with a coping around the water.",
+    defaults: { name: "Pool", w: 16, d: 32, h: 0, props: { depth: 5, corner: 3 } },
+    fields: [
+      { key: "depth", label: "Water depth", type: "number", unit: "ft", step: 0.5, min: 0 },
+      { key: "corner", label: "Corner radius", type: "number", unit: "ft", step: 0.5, min: 0 },
+    ],
+  },
+  {
+    kind: "above-ground-pool",
+    label: "Above-ground pool",
+    icon: "🛟",
+    layer: "structure",
+    resizable: true,
+    description: "Pool standing on the ground, with walls.",
+    defaults: { name: "Pool", w: 12, d: 24, h: 4, props: { corner: 3 } },
+    fields: [{ key: "corner", label: "Corner radius", type: "number", unit: "ft", step: 0.5, min: 0 }],
+  },
+  {
+    kind: "hot-tub",
+    label: "Hot tub",
+    icon: "♨️",
+    layer: "structure",
+    resizable: true,
+    description: "Raised hot tub or spa.",
+    defaults: { name: "Hot tub", w: 7, d: 7, h: 3, props: { corner: 1.5 } },
+    fields: [{ key: "corner", label: "Corner radius", type: "number", unit: "ft", step: 0.25, min: 0 }],
+  },
 
   // Water & power
   { kind: "spigot", label: "Water spigot", icon: "🚰", layer: "utility", description: "Hose bib on the house.", defaults: { name: "Spigot", w: 0.6, d: 0.6, h: 0.6, z: 1.5 } },

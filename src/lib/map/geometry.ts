@@ -319,3 +319,18 @@ export function paintOrder<T extends Solid>(pj: Projector, items: T[]): T[] {
   for (const i of items.map((_, k) => k).sort((x, y) => info[x].depth - info[y].depth)) visit(i);
   return order;
 }
+
+/** A rounded rectangle's outline at height z, inset from the entity's footprint. */
+export function roundedRect(e: Pick<MapEntity, "x" | "y" | "w" | "d">, radius: number, z: number, inset = 0, steps = 6): Vec3[] {
+  const x0 = e.x + inset, y0 = e.y + inset, x1 = e.x + e.w - inset, y1 = e.y + e.d - inset;
+  const r = Math.max(0, Math.min(radius - inset, (x1 - x0) / 2, (y1 - y0) / 2));
+  const corners: [number, number, number][] = [[x1 - r, y0 + r, -90], [x1 - r, y1 - r, 0], [x0 + r, y1 - r, 90], [x0 + r, y0 + r, 180]];
+  const pts: Vec3[] = [];
+  for (const [cx, cy, start] of corners) {
+    for (let i = 0; i <= steps; i++) {
+      const a = ((start + (90 * i) / steps) * Math.PI) / 180;
+      pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r, z]);
+    }
+  }
+  return pts;
+}

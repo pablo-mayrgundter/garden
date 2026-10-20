@@ -5,6 +5,7 @@ import { z } from "zod";
 import { addMapEntity, addNote, addTask, applyTrayLayout, deleteMapEntity, logCare, trayMarkdown, updateMapEntity, updatePlanting, type ActionCtx } from "../actions.ts";
 import { compassPoint, longSideBearing } from "../map/geometry.ts";
 import { KINDS, kindDef } from "../map/kinds.ts";
+import { buildingOpenings } from "../map/openings.ts";
 import { DEFAULT_SITE, type MapEntity } from "../map/model.ts";
 import { formatDate, isDate } from "../dates.ts";
 import { cellRange, eventsFor, notesFor, photosFor, plantingLabel, plantStates, plantingViews, sortedTrays, tasksFor, type PlantingView } from "../garden.ts";
@@ -173,6 +174,10 @@ function mapEntitySummary(data: GardenData, e: MapEntity): string {
     e.links.entityId && `belongs to [${e.links.entityId}]`,
   ].filter(Boolean);
   const props = Object.entries(e.props).filter(([, v]) => v !== null && v !== "");
+  if (kindDef(e.kind).openings) {
+    const count = (t: string) => buildingOpenings(e).filter((o) => o.type === t).length;
+    props.push(["openings", `${count("door")} doors, ${count("window")} windows${count("garage") ? `, ${count("garage")} garage doors` : ""}`]);
+  }
   if (e.links.trayId && data.trays.find((t) => t.id === e.links.trayId)?.layout === "rows") {
     const b = Math.round(longSideBearing(e, (data.garden.site ?? DEFAULT_SITE).northDeg));
     props.push(["rows run", `${b}° from true north (${compassPoint(b)}–${compassPoint(b + 180)})`]);

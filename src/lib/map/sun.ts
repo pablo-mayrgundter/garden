@@ -6,6 +6,7 @@
 // height / tan(altitude), and the shadow is the outline around both.
 
 import { footprintCorners, turn, type Vec2 } from "./geometry.ts";
+import { treeTrunk } from "./kinds.ts";
 import type { MapEntity, Site } from "./model.ts";
 
 export type SunPosition = {
@@ -86,7 +87,6 @@ export function shadowShape(kind: string, flat: boolean | undefined): ShadowShap
   return "box";
 }
 
-const TRUNK: Record<string, number> = { tree: 0.4, "fruit-tree": 0.35, shrub: 0 };
 
 /** The shadow an entity casts on the ground, as a polygon in world feet, or null if it casts none. */
 export function entityShadow(e: MapEntity, shape: ShadowShape, sun: SunPosition, northDeg: number): Vec2[] | null {
@@ -101,7 +101,7 @@ export function entityShadow(e: MapEntity, shape: ShadowShape, sun: SunPosition,
     const cx = e.x + e.w / 2;
     const cy = e.y + e.d / 2;
     const r = Math.min(e.w, e.d) / 2;
-    const base = e.h * (TRUNK[e.kind] ?? 0.3);
+    const base = treeTrunk(e);
     const ring = (z: number) => Array.from({ length: 20 }, (_, i): Vec2 => push(cx + Math.cos((i / 20) * 2 * Math.PI) * r, cy + Math.sin((i / 20) * 2 * Math.PI) * r, z));
     return convexHull([...ring(base + (e.h - base) * 0.15), ...ring(e.h * 0.92), push(cx, cy, 0)]);
   }

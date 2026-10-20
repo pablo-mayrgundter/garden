@@ -17,23 +17,26 @@ import {
   rotForBearing,
   siteBounds,
   snap,
+  turn,
   unprojectDelta,
   type Projector,
   type Rot,
   type ViewMode,
 } from "@/lib/map/geometry";
 import { KINDS, kindDef, type FieldDef } from "@/lib/map/kinds";
-import { DEFAULT_SITE, LAYER_KEYS, LAYERS, type Layer, type MapEntity, type Site } from "@/lib/map/model";
+import { DEFAULT_SITE, LAYER_KEYS, LAYERS, type Layer, type MapEntity, type Opening, type Site, type Wall } from "@/lib/map/model";
 import { drawEntity, MapPatterns, PAL } from "@/lib/map/render";
+import { buildingOpenings, clampOpening, newOpening, placeOpening, wallLine, WALLS } from "@/lib/map/openings";
 import { CITIES, CITY_REGIONS, nearestCity, parseLatLng } from "@/lib/map/places";
 import { entityShadow, gardenLocation, shadowShape, sunFrom, sunGroundDirection, sunPosition, type SunPosition } from "@/lib/map/sun";
 
 type View = { mode: ViewMode; rot: Rot; zoom: number; cx: number; cy: number };
-type Draft = { id: string; x: number; y: number; w: number; d: number; rot?: number };
+type Draft = { id: string; x: number; y: number; w: number; d: number; rot?: number; openings?: Opening[] };
 type Drag =
   | { type: "pan"; sx: number; sy: number; view: View; moved: boolean; selectId: string | null }
   | { type: "move" | "resize" | "rotate"; sx: number; sy: number; entity: MapEntity; moved: boolean }
-  | { type: "compass"; sx: number; sy: number; moved: boolean };
+  | { type: "compass"; sx: number; sy: number; moved: boolean }
+  | { type: "opening"; sx: number; sy: number; entity: MapEntity; openingId: string; moved: boolean };
 
 /** Where the compass sits, from the map's bottom-right corner. */
 const COMPASS_INSET = 40;
@@ -96,6 +99,8 @@ export function MapPage() {
   const [view, setView] = useState<View>(() => ({ mode: "iso", rot: 1, zoom: 0, cx: 0, cy: 0, ...readView() }));
   const [hidden, setHidden] = useState<Set<Layer>>(new Set());
   const [draft, setDraft] = useState<Draft | null>(null);
+  /** The door or window being edited on the selected building. */
+  const [openingSel, setOpeningSel] = useState<string | null>(null);
   const drag = useRef<Drag | null>(null);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const pinch = useRef<{ dist: number; zoom: number } | null>(null);
@@ -163,6 +168,7 @@ export function MapPage() {
   }, [data.mapEntities, draft, hidden, pj]);
 
   const selected = entities.all.find((e) => e.id === selectedId) ?? null;
+  useEffect(() => setOpeningSel(null), [selectedId]);
 
   // ---------- Sun and shadows ----------
 
@@ -212,7 +218,11 @@ export function MapPage() {
     const target = (ev.target as Element).closest("[data-handle], [data-id]");
     const handle = target?.getAttribute("data-handle");
     const id = target?.getAttribute("data-id") ?? null;
-    if (handle === "compass") {
+    if (handle === "opening" && selected) {
+      const openingId = target!.getAttribute("data-opening")!;
+      setOpeningSel(openingId);
+      startDrag(ev, { type: "opening", sx: pt.x, sy: pt.y, entity: selected, openingId, moved: false });
+    } else if (handle === "compass") {
       startDrag(ev, { type: "compass", sx: pt.x, sy: pt.y, moved: false });
     } else if ((handle === "resize" || handle === "rotate") && selected) {
       startDrag(ev, { type: handle, sx: pt.x, sy: pt.y, entity: selected, moved: false });
@@ -254,13 +264,32 @@ export function MapPage() {
       setNorthDraft((((Math.round(deg) % 360) + 360) % 360));
       return;
     }
+    if (d.type === "opening") {
+      // Slide the door or window to the wall spot nearest the pointer, in the building's own (unturned) frame.
+      const e = d.entity;
+      const [gx, gy] = pj.unproject(...toScene(pt.x, pt.y));
+      const cx = e.x + e.w / 2;
+      const cy = e.y + e.d / 2;
+      const [lx, ly] = turn(gx - cx, gy - cy, -(e.rot ?? 0));
+      const list = buildingOpenings(e);
+      const openings = list.map((o) => (o.id === d.openingId ? placeOpening(e, o, cx + lx, cy + ly, (v) => snap(v, 0.5)) : o));
+      setDraft({ id: e.id, x: e.x, y: e.y, w: e.w, d: e.d, rot: e.rot, openings });
+      return;
+    }
     const [wx, wy] = unprojectDelta(pj, dx / view.zoom, dy / view.zoom);
     const e = d.entity;
     const g = site.gridFt;
     if (d.type === "move") {
       setDraft({ id: e.id, x: snap(e.x + wx, g), y: snap(e.y + wy, g), w: e.w, d: e.d, rot: e.rot });
     } else if (d.type === "resize") {
-      setDraft({ id: e.id, ...resizeFromCorner(e, wx, wy, (v) => snap(v, g), Math.max(g, 0.25)), rot: e.rot });
+      const next = resizeFromCorner(e, wx, wy, (v) => snap(v, g), Math.max(g, 0.25));
+      if (kindDef(e.kind).round) {
+        // A canopy stays round: its spread follows the larger of the two, about the same corner.
+        const s = Math.max(next.w, next.d);
+        setDraft({ id: e.id, ...resizeFromCorner(e, s - e.w, s - e.d), rot: e.rot });
+      } else {
+        setDraft({ id: e.id, ...next, rot: e.rot });
+      }
     } else {
       // Turn so the handle follows the pointer: 5° steps, 1° with shift.
       const [gx, gy] = pj.unproject(...toScene(pt.x, pt.y));
@@ -292,7 +321,14 @@ export function MapPage() {
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
     if (!selected) return;
-    if (ev.key === "Escape") return select(null);
+    if (ev.key === "Escape") return openingSel ? setOpeningSel(null) : select(null);
+    if ((ev.key === "Delete" || ev.key === "Backspace") && openingSel && kindDef(selected.kind).openings) {
+      ev.preventDefault();
+      const rest = buildingOpenings(selected).filter((o) => o.id !== openingSel);
+      setOpeningSel(null);
+      act((ctx) => updateMapEntity(ctx, selected.id, { openings: rest }));
+      return;
+    }
     if (ev.key === "Delete" || ev.key === "Backspace") {
       ev.preventDefault();
       if (confirm(`Remove ${selected.name} from the map?`)) act((ctx) => deleteMapEntity(ctx, selected.id)).then(() => select(null));
@@ -321,8 +357,9 @@ export function MapPage() {
     const [wx, wy] = pj.unproject(view.cx, view.cy);
     const def = kindDef(kind);
     const { w, d } = def.defaults;
-    // Ground covers can go anywhere; anything else lands in the nearest clear spot.
-    const taken = def.flat ? [] : data.mapEntities.filter((e) => !kindDef(e.kind).flat).map(footprintBounds);
+    // Ground covers (lawn, paths, areas) go anywhere and don't get in the way; anything else, a pool included, needs clear ground.
+    const cover = (k: typeof def) => k.flat && (k.layer === "ground" || k.layer === "annotation");
+    const taken = cover(def) ? [] : data.mapEntities.filter((e) => !cover(kindDef(e.kind))).map(footprintBounds);
     const spot = freeSpot(taken, site, wx, wy, w, d, Math.max(site.gridFt, 0.5));
     const id = await act((ctx) => addMapEntity(ctx, kind, { x: spot.x + w / 2, y: spot.y + d / 2 }, { x: spot.x, y: spot.y }));
     if (hidden.has(kindDef(kind).layer)) setHidden((h) => new Set([...h].filter((l) => l !== kindDef(kind).layer)));
@@ -344,7 +381,7 @@ export function MapPage() {
   };
 
   const empty = data.mapEntities.length === 0;
-  const ctx = { pj, data, today, zoom: view.zoom || 1, sunShadows: shadows && sun.altitude > 0 };
+  const ctx = { pj, data, today, zoom: view.zoom || 1, sunShadows: shadows && sun.altitude > 0, selectedOpening: openingSel };
   // Night: shade the whole scene, fading in through twilight.
   const night = Math.min(1, Math.max(0, -sun.altitude / 8)) * 0.42;
   const transform = `translate(${size.w / 2 - view.cx * view.zoom} ${size.h / 2 - view.cy * view.zoom}) scale(${view.zoom || 1})`;
@@ -405,7 +442,7 @@ export function MapPage() {
                   {drawEntity(e, ctx)}
                 </g>
               ))}
-              {selected && <Selection pj={pj} e={selected} zoom={view.zoom || 1} resizable={kindDef(selected.kind).resizable ?? false} />}
+              {selected && <Selection pj={pj} e={selected} zoom={view.zoom || 1} resizable={kindDef(selected.kind).resizable ?? false} openingSel={openingSel} />}
             </g>
             {shadows && <Sun pj={pj} site={site} sun={sun} toScreen={toScreen} w={size.w} h={size.h} />}
             {night > 0 && <rect width={size.w} height={size.h} fill="#141b3c" fillOpacity={night} pointerEvents="none" />}
@@ -452,7 +489,7 @@ export function MapPage() {
 
         <aside className="map-panel stack">
           {selected ? (
-            <EntityPanel key={selected.id} e={selected} onClose={() => select(null)} onSelect={select} />
+            <EntityPanel key={selected.id} e={selected} onClose={() => select(null)} onSelect={select} openingSel={openingSel} setOpeningSel={setOpeningSel} />
           ) : (
             <>
               <section className="card">
@@ -520,7 +557,7 @@ function Grid({ pj, site, step }: { pj: Projector; site: Site; step: number }) {
   return <path d={lines.join(" ")} stroke={PAL.ink} strokeOpacity={0.08} strokeWidth={1} vectorEffect="non-scaling-stroke" fill="none" pointerEvents="none" />;
 }
 
-function Selection({ pj: base, e, zoom, resizable }: { pj: Projector; e: MapEntity; zoom: number; resizable: boolean }) {
+function Selection({ pj: base, e, zoom, resizable, openingSel }: { pj: Projector; e: MapEntity; zoom: number; resizable: boolean; openingSel: string | null }) {
   // Through the entity's own projector, so the outline and handles turn with it.
   const pj = entityProjector(base, e);
   const ring = (z: number) => [pj.p(e.x, e.y, z), pj.p(e.x + e.w, e.y, z), pj.p(e.x + e.w, e.y + e.d, z), pj.p(e.x, e.y + e.d, z)].map((q, i) => `${i ? "L" : "M"}${q.join(" ")}`).join(" ") + " Z";
@@ -547,6 +584,27 @@ function Selection({ pj: base, e, zoom, resizable }: { pj: Projector; e: MapEnti
           </circle>
         </>
       )}
+      {kindDef(e.kind).openings &&
+        buildingOpenings(e).map((o) => {
+          // A tab on the ground just outside each door and window: drag it along (or around) the walls.
+          const l = wallLine(e, o.wall);
+          const out = 12 / zoom;
+          const along = o.offset + o.width / 2;
+          const [ox, oy] = pj.p(l.x + l.dx * along + l.nx * out, l.y + l.dy * along + l.ny * out, 0);
+          const [wx, wy] = pj.p(l.x + l.dx * along, l.y + l.dy * along, 0);
+          const sel = o.id === openingSel;
+          const r = (sel ? 8 : 6.5) / zoom;
+          return (
+            <g key={o.id} data-handle="opening" data-opening={o.id} pointerEvents="all" style={{ cursor: "grab" }}>
+              <title>{`${OPENING_LABEL[o.type]}: drag along the walls`}</title>
+              <line x1={wx} y1={wy} x2={ox} y2={oy} stroke={PAL.accent} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+              <rect x={ox - r} y={oy - r} width={r * 2} height={r * 2} rx={r * 0.35} fill={sel ? PAL.accent : "#fff"} stroke={PAL.accent} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+              <text x={ox} y={oy} fontSize={r * 1.2} textAnchor="middle" dominantBaseline="central" fill={sel ? "#fff" : PAL.accent} fontWeight={700}>
+                {o.type === "window" ? "W" : o.type === "door" ? "D" : "G"}
+              </text>
+            </g>
+          );
+        })}
     </g>
   );
 }
@@ -777,7 +835,88 @@ function PropField({ f, value, onCommit }: { f: FieldDef; value: string | number
   );
 }
 
-function EntityPanel({ e, onClose, onSelect }: { e: MapEntity; onClose: () => void; onSelect: (id: string | null) => void }) {
+const OPENING_LABEL: Record<Opening["type"], string> = { window: "Window", door: "Door", garage: "Garage door" };
+
+/** A building's doors and windows: add, change and remove them; drag their tabs on the map to move them. */
+function OpeningsEditor({ e, selected, onSelect }: { e: MapEntity; selected: string | null; onSelect: (id: string | null) => void }) {
+  const { data, act } = useGarden();
+  const openings = buildingOpenings(e);
+  const north = (data.garden.site ?? DEFAULT_SITE).northDeg;
+  const save = (list: Opening[]) => act((ctx) => updateMapEntity(ctx, e.id, { openings: list.map((o) => clampOpening(e, o)) }));
+  const change = (id: string, patch: Partial<Opening>) => save(openings.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+  // Which way each wall faces, by the compass.
+  const facing = (wall: Wall) => {
+    const l = wallLine(e, wall);
+    const bearing = (Math.atan2(l.nx, -l.ny) * 180) / Math.PI + (e.rot ?? 0) - north;
+    return compassPoint(bearing);
+  };
+  const add = (type: Opening["type"]) => {
+    const wall = openings.find((o) => o.id === selected)?.wall ?? "s";
+    const o = newOpening(e, type, wall, Math.random().toString(36).slice(2, 8));
+    onSelect(o.id);
+    save([...openings, o]);
+  };
+  const byWall = [...openings].sort((a, b) => WALLS.indexOf(a.wall) - WALLS.indexOf(b.wall) || a.bottom - b.bottom || a.offset - b.offset);
+  return (
+    <section className="card openings">
+      <h3>Doors &amp; windows</h3>
+      <p className="small muted">Drag the W, D and G tabs on the map to slide them along the walls, or around a corner. Delete removes the selected one.</p>
+      <ul>
+        {byWall.map((o) => (
+          <li key={o.id} className={o.id === selected ? "on" : ""} onClick={() => onSelect(o.id)}>
+            <div className="row small">
+              <select value={o.type} onChange={(ev) => change(o.id, { type: ev.target.value as Opening["type"] })} aria-label="Type">
+                {(Object.keys(OPENING_LABEL) as Opening["type"][]).map((t) => <option key={t} value={t}>{OPENING_LABEL[t]}</option>)}
+              </select>
+              <select value={o.wall} onChange={(ev) => change(o.id, { wall: ev.target.value as Wall })} aria-label="Wall">
+                {WALLS.map((w) => <option key={w} value={w}>{facing(w)} wall</option>)}
+              </select>
+              <button
+                className="ghost small"
+                aria-label="Remove"
+                title="Remove"
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  if (selected === o.id) onSelect(null);
+                  save(openings.filter((x) => x.id !== o.id));
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            {o.id === selected && (
+              <div className="num-grid">
+                <NumField label="Along" value={o.offset} min={0} onCommit={(offset) => change(o.id, { offset })} />
+                <NumField label="Width" value={o.width} min={0.5} onCommit={(width) => change(o.id, { width })} />
+                <NumField label="Height" value={o.height} min={0.5} onCommit={(height) => change(o.id, { height })} />
+                <NumField label="Off ground" value={o.bottom} min={0} onCommit={(bottom) => change(o.id, { bottom })} />
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      <div className="row">
+        <button className="small" onClick={() => add("window")}>+ Window</button>
+        <button className="small" onClick={() => add("door")}>+ Door</button>
+        <button className="small" onClick={() => add("garage")}>+ Garage door</button>
+      </div>
+    </section>
+  );
+}
+
+function EntityPanel({
+  e,
+  onClose,
+  onSelect,
+  openingSel,
+  setOpeningSel,
+}: {
+  e: MapEntity;
+  onClose: () => void;
+  onSelect: (id: string | null) => void;
+  openingSel: string | null;
+  setOpeningSel: (id: string | null) => void;
+}) {
   const { data, today, act } = useGarden();
   const def = kindDef(e.kind);
   const update = (patch: Partial<MapEntity>) => act((ctx) => updateMapEntity(ctx, e.id, patch));
@@ -788,7 +927,7 @@ function EntityPanel({ e, onClose, onSelect }: { e: MapEntity; onClose: () => vo
 
   const duplicate = async () => {
     const id = await act((ctx) =>
-      addMapEntity(ctx, e.kind, { x: 0, y: 0 }, { name: `${e.name} copy`, x: e.x + 1, y: e.y + 1, w: e.w, d: e.d, h: e.h, z: e.z, rot: e.rot, props: { ...e.props }, notes: e.notes }),
+      addMapEntity(ctx, e.kind, { x: 0, y: 0 }, { name: `${e.name} copy`, x: e.x + 1, y: e.y + 1, w: e.w, d: e.d, h: e.h, z: e.z, rot: e.rot, props: { ...e.props }, openings: e.openings, notes: e.notes }),
     );
     onSelect(id);
   };
@@ -807,20 +946,35 @@ function EntityPanel({ e, onClose, onSelect }: { e: MapEntity; onClose: () => vo
         <div className="num-grid">
           <NumField label="X" value={e.x} onCommit={(x) => update({ x })} />
           <NumField label="Y" value={e.y} onCommit={(y) => update({ y })} />
-          {def.resizable && (
+          {def.resizable && def.round && (
+            <NumField
+              label="Spread"
+              value={Math.max(e.w, e.d)}
+              min={0.5}
+              onCommit={(v) => update({ w: v, d: v, x: e.x + e.w / 2 - v / 2, y: e.y + e.d / 2 - v / 2 })}
+            />
+          )}
+          {def.resizable && !def.round && (
             <>
               <NumField label="Width" value={e.w} min={0.1} onCommit={(w) => update({ w })} />
               <NumField label="Depth" value={e.d} min={0.1} onCommit={(d) => update({ d })} />
             </>
           )}
-          <NumField label="Height" value={e.h} min={0} onCommit={(h) => update({ h })} />
+          {!def.derive && <NumField label="Height" value={e.h} min={0} onCommit={(h) => update({ h })} />}
           <NumField label="Raised" value={e.z} min={0} onCommit={(z) => update({ z })} />
           {def.resizable && <NumField label="Turn" value={e.rot ?? 0} step={5} unit="°" onCommit={(rot) => update({ rot: normDeg(rot) })} />}
         </div>
         {def.resizable && <Heading e={e} onCommit={(rot) => update({ rot })} />}
         <p className="small muted">{def.description} X runs east from the lot&rsquo;s west edge, Y south from its north edge.</p>
-        {def.fields?.map((f) => <PropField key={f.key} f={f} value={e.props[f.key]} onCommit={(v) => update({ props: { [f.key]: v } })} />)}
+        {def.fields?.map((f) => <PropField key={f.key} f={f} value={e.props[f.key] ?? f.value?.(e)} onCommit={(v) => update({ props: { [f.key]: v } })} />)}
+        {def.derive && (
+          <p className="small muted">
+            Walls {+e.h.toFixed(1)} ft{e.props.roofRise ? `, ridge ${+(e.h + Number(e.props.roofRise)).toFixed(1)} ft` : ""} high.
+          </p>
+        )}
       </section>
+
+      {def.openings && <OpeningsEditor e={e} selected={openingSel} onSelect={setOpeningSel} />}
 
       {def.links?.includes("tray") && (
         <section className="card">
