@@ -11,7 +11,6 @@ import { SettingsPage } from "./pages/Settings";
 import { Today } from "./pages/Today";
 import { NewTrayPage, TrayPage, TraysPage } from "./pages/Trays";
 import { CalendarPage } from "./pages/Calendar";
-import { MapPage } from "./pages/Map";
 import "./styles.css";
 
 function Layout() {
@@ -72,7 +71,8 @@ const router = createHashRouter([
       { path: "/trays/new", element: <NewTrayPage /> },
       { path: "/trays/:id", element: <TrayPage /> },
       { path: "/calendar", element: <CalendarPage /> },
-      { path: "/map", element: <MapPage /> },
+      // The map is the biggest page by far; it loads when it's first opened.
+      { path: "/map", lazy: async () => ({ Component: (await import("./pages/Map")).MapPage }) },
       { path: "/plantings/:id", element: <PlantingPage /> },
       { path: "/plants", element: <PlantsPage /> },
       { path: "/plants/new", element: <NewPlantPage /> },
