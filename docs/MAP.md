@@ -12,10 +12,13 @@ This document is the spec: the data model, how drawing works, and where new feat
 | `src/lib/map/kinds.ts` | The kinds registry: every kind of thing that can go on the map, as plain data. |
 | `src/lib/map/geometry.ts` | Projection (iso and plan, four rotations), unprojection for dragging, face ordering, snapping, free-spot search. No DOM. |
 | `src/lib/map/render.tsx` | SVG patterns and one drawer per kind. |
+| `src/lib/map/bedPlants.ts` | Where a bed's plants stand on the map (shared by the drawing and the 3D export). |
+| `src/lib/map/ifc.ts` | The map as a 3D building model (IFC4), for Bldrs and other BIM viewers. |
 | `src/lib/map/template.ts` | The starting lot ("Start from a typical lot"). |
 | `src/lib/actions.ts` | `setSite`, `applySiteTemplate`, `addMapEntity`, `updateMapEntity`, `deleteMapEntity`, `createPlanterForEntity`. The UI and the assistant both go through these. |
 | `src/pages/Map.tsx` | The map page: viewport, pointer and keyboard handling, panels. |
 | `test/map.test.ts` | Projection round trips, ordering, kinds, template, actions, garden-file round trip. |
+| `test/ifc.test.ts` | The 3D export opens in web-ifc (the IFC reader Bldrs uses) with a shape for every kind. |
 
 ## World coordinates
 
@@ -141,6 +144,24 @@ All of it can be turned off with the 🐦 box in the clock, and it stays still f
   - **Butterflies** come to beds with flowering plants, and **hummingbirds** to tubular flowers. The plants are matched by name in the seed library (`BUTTERFLY_PLANTS`, `HUMMINGBIRD_PLANTS`), or by a seed library category of "flower". This is the start of making plant choices show up as visitors.
   - **Cats** (Mochi, Pepper, Marmalade, Tux, Calico, Smokey, Biscuit, Snowball) wander in now and then from the nearest edge. Each sits on open ground with a swishing tail and the odd blink, then wanders off. They stay in when it's wet.
 - To add a visitor or make a plant attract one, add to `VISITORS` and `attractors()`, and give it a sprite in `Critters.tsx`.
+
+## 3D model (IFC)
+
+*Download IFC model* (map side panel, with nothing selected) saves the map as an IFC4 building model, the open format BIM tools share. Open it in [Bldrs](https://share.bldrs.ai) or any IFC viewer to walk around the house and yard in 3D. `exportIfc` in `src/lib/map/ifc.ts` writes the ISO 10303-21 text itself, with no library.
+
+- **Structure:** an `IfcProject` holds one `IfcSite`: the lot, with the garden's latitude and longitude and true north from the compass. Each house and shed is an `IfcBuilding` with an `IfcBuildingStorey` per floor. Each storey has four `IfcWall`s, named by the way they face ("SSE wall"), and a floor `IfcSlab`. Each door and window is an `IfcOpeningElement` cut through its wall and filled by an `IfcDoor` or `IfcWindow`, and the top storey has the gable `IfcRoof` and gable ends. Everything else is contained in the site under a fitting class:
+  - `IfcGeographicElement`: lawn, trees, shrubs, hedges, and each planting in a bed, plus the ground itself
+  - `IfcSlab`: patios, paths and driveways
+  - `IfcRailing`: fences
+  - `IfcDoor` (gate): gates
+  - `IfcValve`, `IfcOutlet`, `IfcFlowMeter`, `IfcTank`, `IfcUnitaryEquipment`, `IfcPipeSegment`, `IfcSensor`: water and power fittings
+  - `IfcBuildingElementProxy`: the rest
+  - Areas are notes on the plan and are left out.
+- **Shapes** follow the drawing: same sizes, roof (with its overhang), fence posts, pools (in-ground ones are dug out of the ground, with translucent water) and plants. A bed's plants are the same spots as on the map (`bedPlants`), one element per planting, sized by growth stage; planned and just-sown ones don't show yet. Colors come from the map's palette.
+- **Properties:** each element has a "Garden" property set: its kind, size in feet, kind settings (stories, roof rise, fence style…), linked planter, plant and owner, and notes. Plantings carry their plant, bed, status, count and sow date.
+- **Units and axes:** metres. The map's y runs south and IFC's Y runs north, so y flips. Each element is placed at its footprint's center and turned (`IfcLocalPlacement`), so a turned shed is a turned building.
+- **GlobalIds** are hashed from the entity's ID, so exporting again gives every element the same ID and viewers can match it up.
+- To export a new kind: give it a class in `CLASSES` (it defaults to a proxy) and a shape in `SHAPES` (it defaults to its box).
 
 ## Interaction
 

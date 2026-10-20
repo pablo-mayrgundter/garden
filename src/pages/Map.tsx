@@ -31,6 +31,8 @@ import { formatTemp, prefersFahrenheit, type DayForecast, type Sky } from "@/lib
 import { useForecast } from "@/lib/weather/useWeather";
 import { buildingOpenings, clampOpening, newOpening, placeOpening, wallLine, WALLS } from "@/lib/map/openings";
 import { CITIES, CITY_REGIONS, nearestCity, parseLatLng } from "@/lib/map/places";
+import { exportIfc, fileSlug } from "@/lib/map/ifc";
+import { downloadFile } from "@/lib/download";
 import { entityShadow, gardenLocation, shadowShape, sunFrom, sunGroundDirection, sunPosition, type SunPosition } from "@/lib/map/sun";
 
 type View = { mode: ViewMode; rot: Rot; zoom: number; cx: number; cy: number };
@@ -582,6 +584,7 @@ export function MapPage() {
                   </details>
                 </section>
               )}
+              {!empty && <ExportPanel />}
               <SitePanel site={site} />
             </>
           )}
@@ -1290,6 +1293,22 @@ function LocationPicker({ site, save }: { site: Site; save: (patch: Partial<Site
       {error && <p className="small error">{error}</p>}
       <p className="small muted">For the sun and shadows. Kept only in this browser and your garden files, to about 10 m.</p>
     </div>
+  );
+}
+
+/** The map as a 3D building model (IFC), for Bldrs and other BIM viewers. */
+function ExportPanel() {
+  const { data, today } = useGarden();
+  const download = () => downloadFile(`${fileSlug(data.garden.name)}-${today}.ifc`, new Blob([exportIfc(data)], { type: "application/x-step" }));
+  return (
+    <section className="card">
+      <h3>3D model</h3>
+      <p className="small muted">
+        The house and yard as an IFC building model: walls, doors and windows, the roof, beds and their plants, trees, fences and pools, each with its settings. Open it in{" "}
+        <a href="https://share.bldrs.ai" target="_blank" rel="noreferrer">Bldrs</a> (or any BIM viewer) to walk around it in 3D.
+      </p>
+      <button className="small" onClick={download}>⬇️ Download IFC model</button>
+    </section>
   );
 }
 
