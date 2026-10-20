@@ -4,10 +4,8 @@
 // every rotation. Kinds without a drawer here draw as a plain box.
 
 import type { ReactNode } from "react";
-import { layoutBed } from "../bedLayout.ts";
-import { plantStates } from "../garden.ts";
-import { speciesColor } from "../plantColors.ts";
-import type { GardenData, Planting } from "../types.ts";
+import type { GardenData } from "../types.ts";
+import { bedPlants } from "./bedPlants.ts";
 import { boxFaces, entityProjector, orderFaces, pathOf, roundedRect, type Face, type Projector, type Vec3 } from "./geometry.ts";
 import { treeTrunk } from "./kinds.ts";
 import type { MapEntity, Opening } from "./model.ts";
@@ -253,45 +251,6 @@ function Building(e: MapEntity, ctx: DrawCtx, withStories: boolean) {
     </>
   );
 }
-
-/** Plants of a planter laid out in a bed, from the same layout as the planter page: rows along the long side. */
-export function bedPlants(e: MapEntity, data: GardenData, inset = 0.18): { x: number; y: number; r: number; color: string; stage: number; key: string }[] {
-  const tray = e.links.trayId ? data.trays.find((t) => t.id === e.links.trayId) : undefined;
-  if (!tray) return [];
-  const alongX = e.w >= e.d;
-  const size = { length: (alongX ? e.w : e.d) - inset * 2, width: (alongX ? e.d : e.w) - inset * 2 };
-  const plantings = data.plantings.filter((x) => x.trayId === tray.id);
-  const bed = layoutBed(tray, plantings, size);
-  const byId = new Map(plantings.map((p) => [p.id, p]));
-  const species = new Map(data.species.map((x) => [x.id, x]));
-  const states = new Map(plantings.map((p) => [p.id, p.count ? plantStates(data, p.id, p.count) : []]));
-  const stageOf = (p: Planting) => ({ planned: 0.15, sown: 0.3, sprouted: 0.6, growing: 0.85, transplanted: 0.85, harvesting: 1, done: 0.4, failed: 0.2 })[p.status] ?? 0.5;
-  const rowGap = size.width / Math.max(1, tray.rows.length);
-  const spacing = new Map(bed.rows.flatMap((r) => r.plantings.map((rp) => [rp.planting.id, rp.spacingIn / 12] as const)));
-  return bed.spots.map((s) => {
-    const p = byId.get(s.plantingId)!;
-    const st = states.get(p.id)?.[s.n - 1];
-    return {
-      key: `${p.id}-${s.n}`,
-      x: alongX ? e.x + inset + s.along : e.x + inset + s.across,
-      y: alongX ? e.y + inset + s.across : e.y + inset + s.along,
-      r: Math.min(spacing.get(p.id) ?? rowGap, rowGap) * 0.42,
-      color: st && st.condition !== "healthy" ? CONDITION_TINT[st.condition] : speciesColor(species.get(p.speciesId)),
-      stage: stageOf(p),
-    };
-  });
-}
-
-const CONDITION_TINT: Record<string, string> = {
-  pests: "#d4572a",
-  disease: "#8a5a2b",
-  nutrients: "#e0b52d",
-  water: "#4d86c4",
-  weeds: "#8a9a3a",
-  damage: "#9a5bb5",
-  missing: "#333333",
-  other: "#8a8a8a",
-};
 
 function Plants({ e, ctx, z }: { e: MapEntity; ctx: DrawCtx; z: number }) {
   const { pj, data } = ctx;

@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { GardenSettingsForm } from "@/components/forms";
+import { downloadFile } from "@/lib/download";
 import { useGarden } from "@/lib/GardenContext";
 import { getAssistantSettings, OLLAMA_DEFAULTS, saveAssistantSettings } from "@/lib/settings";
 import { exportBackup, importBackup, RECORD_STORES, type Backup } from "@/lib/store";
@@ -107,15 +108,7 @@ export function SettingsPage() {
 
   const download = async () => {
     const backup = await exportBackup(db);
-    const url = URL.createObjectURL(new Blob([JSON.stringify(backup)], { type: "application/json" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${data.garden.name.toLowerCase().replace(/\W+/g, "-")}-${today}.json`;
-    document.body.append(a);
-    a.click();
-    a.remove();
-    // Revoking right away can cancel the download in some browsers.
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    downloadFile(`${data.garden.name.toLowerCase().replace(/\W+/g, "-")}-${today}.json`, new Blob([JSON.stringify(backup)], { type: "application/json" }));
     setBackupMsg({ ok: "Garden file downloaded ✓" });
   };
 
