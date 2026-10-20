@@ -455,3 +455,6 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .forecast-day.on { border-color: var(--blue); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 30%, transparent); background: var(--blue-soft); }
 .forecast-note { margin: 4px 2px 0; }
 @media (max-width: 520px) { .forecast-day .precip { display: none; } .forecast-day { padding: 6px 2px; } }
+.cal-entry.rain { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); }
+.rain-gauge { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.rain-gauge input { width: 90px; }

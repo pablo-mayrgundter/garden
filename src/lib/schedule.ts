@@ -1,7 +1,7 @@
 // Turns a planting's species data + care log into a concrete schedule:
 // watering cadence, germination window, and the species' milestones.
 
-import { addDays, daysBetween } from "./dates.ts";
+import { addDays, daysBetween, formatDate } from "./dates.ts";
 import type { EventType, Milestone, PlantingStatus } from "./model.ts";
 
 export type CareStatus = "done" | "overdue" | "due" | "upcoming" | "late";
@@ -16,6 +16,8 @@ export type CareItem = {
   end: string;
   status: CareStatus;
   doneOn?: string;
+  /** For watering: the rain that counted as the last watering. */
+  rainedOn?: string;
 };
 
 export type ScheduleInput = {
@@ -26,6 +28,8 @@ export type ScheduleInput = {
   waterEveryDays: number;
   milestones: Milestone[];
   events: { type: string; date: string }[];
+  /** Rainy days that reached this planting (outdoors only), oldest first; they count as watering. */
+  rain?: { date: string; inches: number; source: string }[];
 };
 
 const ACTIVE: PlantingStatus[] = ["sown", "sprouted", "growing", "transplanted", "harvesting"];
@@ -63,12 +67,19 @@ export function careSchedule(p: ScheduleInput, today: string): CareItem[] {
 
   // Watering
   const interval = wateringInterval(p);
-  const lastWater = lastEvent(p.events, "watered");
+  const byHand = lastEvent(p.events, "watered");
+  const rained = p.rain?.filter((r) => r.date <= today).at(-1) ?? null;
+  const rainedLast = rained && (!byHand || rained.date >= byHand) ? rained : null;
+  const lastWater = rainedLast ? rainedLast.date : byHand;
   const next = lastWater ? addDays(lastWater, interval) : today;
+  const cadence = interval === 1 ? "Daily" : `Every ${interval} days`;
   items.push({
     key: "water",
     title: SEEDLING.includes(p.status) ? "Keep moist (mist)" : "Water",
-    detail: interval === 1 ? "Daily" : `Every ${interval} days`,
+    detail: rainedLast
+      ? `${cadence} · ${rainedLast.source === "expected" ? "rain expected" : "rained"} ${rainedLast.date === today ? "today" : `on ${formatDate(rainedLast.date)}`} (${rainedLast.inches.toFixed(2)} in), which counts`
+      : cadence,
+    rainedOn: rainedLast?.date,
     event: "watered",
     start: next,
     end: next,

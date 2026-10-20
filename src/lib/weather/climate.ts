@@ -63,7 +63,7 @@ export function frostDates(dates: string[], minsC: (number | null)[], lat: numbe
       if (which === "last" && springHalf.length) found.push(Math.max(...springHalf));
       if (which === "first" && autumnHalf.length) found.push(Math.min(...autumnHalf));
     }
-    if (found.length < full.length / 2) return null;
+    if (!found.length || found.length < full.length / 2) return null;
     return monthDay(found.reduce((a, b) => a + b, 0) / found.length);
   };
   return {
@@ -94,5 +94,8 @@ export async function fetchFrostDates(latIn: number, lonIn: number, fetchFn: Fet
   const res = await fetchFn(`https://archive-api.open-meteo.com/v1/archive?${q}`);
   if (!res.ok) throw new Error(`Open-Meteo answered ${res.status}`);
   const json = await res.json();
-  return frostDates(json.daily?.time ?? [], json.daily?.temperature_2m_min ?? [], lat);
+  const result = frostDates(json.daily?.time ?? [], json.daily?.temperature_2m_min ?? [], lat);
+  // Too little history to average (a hiccup, or a spot the archive doesn't cover): report it, don't cache it.
+  if (result.years < 10) throw new Error(`only ${result.years} years of weather history for this spot`);
+  return result;
 }

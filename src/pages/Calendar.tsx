@@ -2,7 +2,9 @@ import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { calendarEntries, monthGrid, type CalendarEntry } from "@/lib/calendar";
 import { formatDate } from "@/lib/dates";
+import { setGaugeRain } from "@/lib/actions";
 import { useGarden } from "@/lib/GardenContext";
+import { RAIN_WATERS_IN } from "@/lib/weather/rain";
 import type { FrostDates } from "@/lib/weather/climate";
 import { formatTemp, prefersFahrenheit, type DayForecast } from "@/lib/weather/forecast";
 import { useForecast, useFrostDates } from "@/lib/weather/useWeather";
@@ -22,6 +24,44 @@ function frostMarks(f: FrostDates | null): Map<string, { icon: string; text: str
 }
 
 const mdLabel = (md: string | null) => (md ? new Date(Date.UTC(2001, Number(md.slice(0, 2)) - 1, Number(md.slice(3)))).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "rarely");
+
+/** What the garden's own rain gauge read on a day: overrides the weather record for that day. */
+function RainGauge({ date }: { date: string }) {
+  const { data, act } = useGarden();
+  const day = (data.rain ?? []).find((r) => r.date === date);
+  const [value, setValue] = useState(day?.source === "gauge" ? String(day.inches) : "");
+  const save = (inches: number | null) => act((ctx) => setGaugeRain(ctx, date, inches));
+  return (
+    <form
+      className="rain-gauge small"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const v = Number(value);
+        if (value.trim() !== "" && Number.isFinite(v) && v >= 0) save(v);
+      }}
+    >
+      <span>🌧️ Rain gauge</span>
+      <input type="number" step="0.01" min="0" value={value} placeholder={day ? day.inches.toFixed(2) : "0.00"} onChange={(e) => setValue(e.target.value)} aria-label="Inches of rain" />
+      <span>in</span>
+      <button className="small">Save</button>
+      {day?.source === "gauge" && (
+        <button type="button" className="ghost small" onClick={() => { setValue(""); save(null); }}>
+          Use the weather record
+        </button>
+      )}
+      <span className="muted">
+        {day
+          ? day.source === "gauge"
+            ? "From your gauge."
+            : day.source === "expected"
+              ? `Rain likely today (${day.chance ?? "?"}%); the measured amount replaces this tomorrow.`
+              : `Weather record: ${day.inches.toFixed(2)} in.`
+          : "No rain recorded for this day yet."}{" "}
+        {RAIN_WATERS_IN} in or more counts as watering for the beds outdoors.
+      </span>
+    </form>
+  );
+}
 
 function ForecastBadge({ f, fahrenheit }: { f: DayForecast; fahrenheit: boolean }) {
   return (
@@ -87,6 +127,7 @@ export function CalendarPage() {
           <span className="cal-entry scheduled">planned</span>
           <span className="cal-entry overdue">overdue</span>
           <span className="cal-entry task">reminder</span>
+          <span className="cal-entry rain">rain</span>
         </div>
       </div>
 
@@ -133,6 +174,7 @@ export function CalendarPage() {
           </p>
         )}
         {(marks.get(selected.slice(5)) ?? []).map((m) => <p key={m.text} className="small">{m.icon} {m.detail}</p>)}
+        {selected <= today && <RainGauge key={selected} date={selected} />}
         {selectedEntries.length ? (
           <div className="stack" style={{ gap: 6 }}>
             {selectedEntries.map((e, i) => (

@@ -23,6 +23,7 @@ const data: GardenData = {
   notes: [],
   photos: [],
   mapEntities: [],
+  rain: [],
   tasks: [{ id: "t1", plantingId: null, title: "Rotate the tray", dueDate: "2026-10-20", doneAt: null, by: null, byAssistant: false, createdAt: "" }],
 };
 

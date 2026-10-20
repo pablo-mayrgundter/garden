@@ -7,7 +7,7 @@ import { useGarden, usePhotoUrl } from "@/lib/GardenContext";
 import { CONDITIONS } from "@/lib/model";
 import type { CareItem, CareStatus } from "@/lib/schedule";
 import { RowBed } from "./RowBed";
-import type { CareEvent, Note, Task, Tray } from "@/lib/types";
+import type { CareEvent, Note, RainDay, Task, Tray } from "@/lib/types";
 
 export function Photo({ id, alt, className, link }: { id: string | null | undefined; alt: string; className?: string; link?: boolean }) {
   const { data } = useGarden();
@@ -227,27 +227,39 @@ export function NoteList({ notes, plantingNames }: { notes: Note[]; plantingName
   );
 }
 
-export function EventLog({ events }: { events: CareEvent[] }) {
+export function EventLog({ events, rain = [] }: { events: CareEvent[]; rain?: RainDay[] }) {
   const { act } = useGarden();
-  if (!events.length) return <p className="empty">Nothing logged yet.</p>;
+  if (!events.length && !rain.length) return <p className="empty">Nothing logged yet.</p>;
+  // Rainy days sit in the log with the care they stood in for, newest first.
+  const rows = [...events.map((e) => ({ date: e.date, e })), ...rain.map((r) => ({ date: r.date, r }))].sort((a, b) => b.date.localeCompare(a.date));
   return (
     <ul className="timeline">
-      {events.map((e) => (
-        <li key={e.id}>
-          <span className="date">{formatDate(e.date)}</span>
-          <span style={{ flex: 1 }}>
-            {EVENT_LABEL[e.type]?.icon} {EVENT_LABEL[e.type]?.label ?? e.type}
-            {e.condition && <strong> {CONDITIONS[e.condition]?.icon} {CONDITIONS[e.condition]?.label}</strong>}
-            {e.plants?.length ? <span className="muted"> · plant{e.plants.length === 1 ? "" : "s"} {e.plants.join(", ")}</span> : null}
-            {e.note && <span className="muted"> — {e.note}</span>}
-            {e.by && <span className="muted small"> · {e.by}</span>}
-            {e.byAssistant && <span className="chip ai" style={{ marginLeft: 6 }}>via assistant</span>}
-          </span>
-          <ActionButton className="ghost tiny" title="Remove" onClick={() => act((ctx) => deleteEvent(ctx, e.id))}>
-            ✕
-          </ActionButton>
-        </li>
-      ))}
+      {rows.map((row) =>
+        "r" in row ? (
+          <li key={`rain-${row.r.date}`} className="rain-row">
+            <span className="date">{formatDate(row.r.date)}</span>
+            <span style={{ flex: 1 }}>
+              {row.r.source === "expected" ? "🌦️ Rain likely" : "🌧️ Rained"} {row.r.inches.toFixed(2)} in
+              <span className="muted small"> · counts as watering{row.r.source === "gauge" ? " · rain gauge" : row.r.source === "expected" ? ` · ${row.r.chance ?? "?"}% chance` : " · weather record"}</span>
+            </span>
+          </li>
+        ) : (
+          <li key={row.e.id}>
+            <span className="date">{formatDate(row.e.date)}</span>
+            <span style={{ flex: 1 }}>
+              {EVENT_LABEL[row.e.type]?.icon} {EVENT_LABEL[row.e.type]?.label ?? row.e.type}
+              {row.e.condition && <strong> {CONDITIONS[row.e.condition]?.icon} {CONDITIONS[row.e.condition]?.label}</strong>}
+              {row.e.plants?.length ? <span className="muted"> · plant{row.e.plants.length === 1 ? "" : "s"} {row.e.plants.join(", ")}</span> : null}
+              {row.e.note && <span className="muted"> — {row.e.note}</span>}
+              {row.e.by && <span className="muted small"> · {row.e.by}</span>}
+              {row.e.byAssistant && <span className="chip ai" style={{ marginLeft: 6 }}>via assistant</span>}
+            </span>
+            <ActionButton className="ghost tiny" title="Remove" onClick={() => act((ctx) => deleteEvent(ctx, row.e.id))}>
+              ✕
+            </ActionButton>
+          </li>
+        ),
+      )}
     </ul>
   );
 }

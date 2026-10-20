@@ -137,3 +137,12 @@ test("frost dates come from 30 full years of history", async () => {
   assert.match(url, /start_date=1996-01-01&end_date=2025-12-31/);
   assert.equal(f.years, 30);
 });
+
+test("too little history is an error (not cached), never an invalid date", async () => {
+  const empty = frostDates([], [], 40);
+  assert.deepEqual([empty.lastFrost, empty.firstFrost, empty.lastHardFreeze, empty.firstHardFreeze, empty.years], [null, null, null, null, 0]);
+  await assert.rejects(
+    fetchFrostDates(30.18, -97.79, async () => json({ daily: { time: [], temperature_2m_min: [] } }), new Date("2026-10-20T12:00:00Z")),
+    /only 0 years of weather history/,
+  );
+});

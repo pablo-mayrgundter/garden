@@ -125,6 +125,11 @@ A kind can also say:
 - **On the map:** the week runs along under the map. Tapping a day sets the clock to that day and simulates its sky. Clouds dim the scene and send soft cloud shadows drifting over, and sun shadows fade. Rain and snow fall in screen space, so they look the same at any zoom. Snow whitens the ground, and rain and wind make the trees sway harder. Tap the day again, or *Now*, to go back to live.
 - **Frost dates** (`climate.ts`): 30 full years of daily lows from Open-Meteo's historical weather (ERA5 reanalysis, about a 10 km grid). For each year it finds the last freezing night of spring and the first of autumn, at 32°F (frost) and 28°F (hard freeze), then averages them. Spring and autumn swap in the southern hemisphere. A threshold reached in fewer than half the years reads "rarely".
 - **Calendar:** the week's forecast icons with highs and lows, and the four frost dates marked every year, with a summary card.
+- **Rain** (`rain.ts`): rain that fell in the garden is part of the garden. It's kept in the `rain` store, one record per day, and travels in the garden file.
+  - Where amounts come from: Open-Meteo's daily precipitation for the location. That's the forecast service's past days for the last two weeks, and its archive for older days. While the app is open (`RainSync`), it fills in missing days up to 120 days back and refreshes today every hour.
+  - Today: counts as *expected* when the forecast chance is at least 60%, and is replaced by the recorded amount once the day is over.
+  - Your own gauge: a reading entered on the calendar always wins.
+  - Watering: a day with 0.1 in or more counts as watering, but only for outdoor plantings. That means a bed planted in rows, or a planter linked to a bed or container on the map (`rainReaches`); a seed tray on the seed station never gets rained on. It shows in the planting's watering status and history, on the calendar, and in the assistant's context.
 
 ## Animation
 
