@@ -343,6 +343,8 @@ function Canopy(e: MapEntity, ctx: DrawCtx, opts: { fruit?: string } = {}) {
   const vr = pj.mode === "iso" ? Math.max((e.h - trunkTop) / 2, rad * 0.6) * 0.85 : rad;
   // Deterministic scallops so a tree looks the same on every render.
   let seed = [...e.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+  // Each tree sways at its own pace (see .canopy in styles.css).
+  const sway = { animationDelay: `-${(seed % 37) / 10}s`, animationDuration: `${2.4 + (seed % 19) / 10}s` };
   const rand = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
   const blobs = Array.from({ length: 7 }, (_, i) => {
     const a = (i / 7) * Math.PI * 2 + rand();
@@ -354,14 +356,16 @@ function Canopy(e: MapEntity, ctx: DrawCtx, opts: { fruit?: string } = {}) {
       {trunkTop > 0 && pj.mode === "iso" && (
         <path d={`M${gx - 0.25} ${gy} L${gx - 0.2} ${pj.p(cx, cy, trunkTop)[1]} L${gx + 0.2} ${pj.p(cx, cy, trunkTop)[1]} L${gx + 0.25} ${gy} Z`} fill={PAL.trunk} {...ink} />
       )}
-      {blobs.map((b, i) => (
-        <circle key={i} cx={b.x} cy={b.y} r={b.r} fill={i % 2 ? "url(#pat-foliage)" : PAL.foliageDark} {...ink} />
-      ))}
-      <circle cx={sx} cy={sy} r={rad * 0.55} fill="url(#pat-foliage)" {...ink} />
-      {opts.fruit &&
-        Array.from({ length: 9 }, (_, i) => (
-          <circle key={`f${i}`} cx={sx + (rand() - 0.5) * rad * 1.3} cy={sy + (rand() - 0.5) * vr * 1.1} r={Math.max(0.15, rad * 0.06)} fill={opts.fruit} {...ink} strokeWidth={0.5} />
+      <g className="canopy" style={sway}>
+        {blobs.map((b, i) => (
+          <circle key={i} cx={b.x} cy={b.y} r={b.r} fill={i % 2 ? "url(#pat-foliage)" : PAL.foliageDark} {...ink} />
         ))}
+        <circle cx={sx} cy={sy} r={rad * 0.55} fill="url(#pat-foliage)" {...ink} />
+        {opts.fruit &&
+          Array.from({ length: 9 }, (_, i) => (
+            <circle key={`f${i}`} cx={sx + (rand() - 0.5) * rad * 1.3} cy={sy + (rand() - 0.5) * vr * 1.1} r={Math.max(0.15, rad * 0.06)} fill={opts.fruit} {...ink} strokeWidth={0.5} />
+          ))}
+      </g>
     </>
   );
 }

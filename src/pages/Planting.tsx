@@ -8,6 +8,7 @@ import { deletePhoto, deletePlanting } from "@/lib/actions";
 import { daysBetween, formatDate } from "@/lib/dates";
 import { cellRange, eventsFor, notesFor, photosFor, plantingViews, tasksFor } from "@/lib/garden";
 import { useGarden } from "@/lib/GardenContext";
+import { rainReaches, rainyDays } from "@/lib/weather/rain";
 import { sproutedOn } from "@/lib/schedule";
 
 export function PlantingPage() {
@@ -25,6 +26,8 @@ export function PlantingPage() {
   const hero = photos[0] ?? packet.find((ph) => ph.kind === "packet_front");
   const sprouted = sproutedOn(events);
   const age = p.sownAt ? daysBetween(p.sownAt, today) : null;
+  // Rain that reached this planting since it was sown (outdoors only) counts as watering.
+  const rainHere = p.sownAt && rainReaches(p, data) ? rainyDays(data.rain ?? [], today).filter((r) => r.date >= p.sownAt!) : [];
 
   return (
     <>
@@ -91,7 +94,7 @@ export function PlantingPage() {
             <h2>Log care</h2>
             <QuickLog plantingIds={[p.id]} today={today} />
             <h3 style={{ marginTop: 18 }}>History</h3>
-            <EventLog events={events} />
+            <EventLog events={events} rain={rainHere} />
           </section>
 
           <section className="card">

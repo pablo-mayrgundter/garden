@@ -347,6 +347,8 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .map-labels text { font-family: ui-serif, Georgia, serif; paint-order: stroke; stroke: #fffaf0; stroke-width: 3px; stroke-linejoin: round; fill: #3a2c1c; }
 .map-labels .ent-label { font-size: 12px; font-weight: 600; }
 .map-labels .area-label { font-size: 13px; font-style: italic; fill: #6b5a44; letter-spacing: 0.04em; }
+/* Hovered things get a light label; the selected one keeps the full weight. */
+.map-labels .hover { font-weight: 400; fill: #6b5a44; stroke-width: 2.5px; }
 .map-toolbar { position: absolute; top: 10px; left: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
 .map-toolbar .seg { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
 .map-toolbar .seg button { border: 0; border-radius: 0; padding: 5px 11px; background: transparent; font-size: 0.9rem; min-width: 34px; }
@@ -398,3 +400,61 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .map-panel .openings li .row { flex-wrap: nowrap; }
 .map-panel .openings li select { padding: 3px 6px; font-size: 0.85rem; min-width: 0; }
 .map-panel .openings li .num-grid { margin: 6px 0 0; }
+
+/* ---------- Weather on the calendar ---------- */
+.cal-day-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.cal-weather { display: inline-flex; align-items: center; gap: 2px; font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+.cal-weather .temps { font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) { .cal-weather .temps { display: none; } }
+.cal-entry.climate { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
+.frost-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 6px 0 10px; }
+.frost-grid > div { display: flex; flex-direction: column; gap: 2px; background: var(--surface-2); border-radius: 10px; padding: 8px 10px; }
+
+/* ---------- Map animation ---------- */
+/* Trees and shrubs sway from the bottom of the canopy; --sway grows with wind and rain. */
+.map-svg .canopy { transform-box: fill-box; transform-origin: 50% 100%; animation: rustle 3s ease-in-out infinite alternate; }
+@keyframes rustle {
+  from { transform: rotate(calc(var(--sway, 1) * -0.8deg)) skewX(calc(var(--sway, 1) * -0.7deg)); }
+  to { transform: rotate(calc(var(--sway, 1) * 0.8deg)) skewX(calc(var(--sway, 1) * 0.7deg)); }
+}
+.map-svg.still .canopy { animation: none; }
+.critters .flap { transform-box: fill-box; transform-origin: 50% 100%; animation: flap 0.2s ease-in-out infinite alternate; }
+@keyframes flap { from { transform: scaleY(1); } to { transform: scaleY(-0.6); } }
+.critters .flutter { transform-box: fill-box; transform-origin: 50% 50%; animation: flutter 0.16s ease-in-out infinite alternate; }
+@keyframes flutter { from { transform: scaleX(1); } to { transform: scaleX(0.2); } }
+.critters .buzz { animation: buzz 0.06s linear infinite alternate; }
+@keyframes buzz { from { opacity: 0.85; } to { opacity: 0.25; } }
+.critters .tail { transform-box: fill-box; transform-origin: 100% 100%; animation: swish 2.8s ease-in-out infinite; }
+@keyframes swish { 0%, 100% { transform: rotate(0deg); } 40% { transform: rotate(-14deg); } 60% { transform: rotate(6deg); } }
+.critters .blink { transform-box: fill-box; transform-origin: 50% 50%; animation: blink 5.5s infinite; }
+@keyframes blink { 0%, 94%, 100% { transform: scaleY(1); } 96% { transform: scaleY(0.1); } }
+.critters .leg-a, .critters .leg-b { transform-box: fill-box; transform-origin: 50% 0%; animation: stride 0.35s ease-in-out infinite alternate; }
+.critters .leg-b { animation-direction: alternate-reverse; }
+@keyframes stride { from { transform: skewX(-18deg); } to { transform: skewX(18deg); } }
+.critters .cat { cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+  .map-svg .canopy, .critters *, .weather-fx * { animation: none !important; }
+}
+
+/* ---------- Weather on the map ---------- */
+.map-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.weather-fx .rainfall { animation: rainfall 0.42s linear infinite; }
+@keyframes rainfall { from { transform: translate(0, 0); } to { transform: translate(-18px, 64px); } }
+.weather-fx .snowfall { animation: snowfall 7s linear infinite; }
+@keyframes snowfall { from { transform: translate(0, 0); } to { transform: translate(30px, 90px); } }
+.weather-fx .cloud-shadow { filter: blur(24px); animation: drift 40s linear infinite; }
+.weather-fx .cloud-shadow.c1 { animation-duration: 55s; animation-delay: -20s; }
+.weather-fx .cloud-shadow.c2 { animation-duration: 48s; animation-delay: -35s; }
+@keyframes drift { from { transform: translateX(-60%); } to { transform: translateX(60%); } }
+.forecast-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.forecast-day { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.forecast-day .dow { font-size: 0.8rem; font-weight: 600; }
+.forecast-day .icon { font-size: 1.4rem; line-height: 1.2; }
+.forecast-day .temps { font-size: 0.85rem; white-space: nowrap; }
+.forecast-day .precip { font-size: 0.72rem; color: var(--blue); }
+.forecast-day.on { border-color: var(--blue); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 30%, transparent); background: var(--blue-soft); }
+.forecast-note { margin: 4px 2px 0; }
+@media (max-width: 520px) { .forecast-day .precip { display: none; } .forecast-day { padding: 6px 2px; } }
+.cal-entry.rain { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); }
+.rain-gauge { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.rain-gauge input { width: 90px; }

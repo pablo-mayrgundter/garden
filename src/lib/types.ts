@@ -136,6 +136,8 @@ export type GardenData = {
   tasks: Task[];
   /** Everything placed on the garden map. */
   mapEntities: MapEntity[];
+  /** Rain that fell in the garden, one record per day (see weather/rain.ts). */
+  rain: RainDay[];
 };
 
 export type ChatRecord = {
@@ -148,4 +150,22 @@ export type ChatRecord = {
   content: unknown[];
   display: { text?: string; tools?: string[] } | null;
   createdAt: string;
+};
+
+/** How much rain fell in the garden on a day. */
+export type RainDay = {
+  /** The date, YYYY-MM-DD (one record per day). */
+  id: string;
+  date: string;
+  inches: number;
+  /**
+   * "recorded": the day's precipitation for the garden's location from Open-Meteo (model analysis of observations);
+   * "expected": today, from a forecast with a high chance of rain, until the day is over;
+   * "gauge": read off the garden's own rain gauge, which always wins.
+   */
+  source: "recorded" | "expected" | "gauge";
+  /** The forecast's chance of rain, for expected days. */
+  chance?: number | null;
+  by?: string | null;
+  updatedAt: string;
 };

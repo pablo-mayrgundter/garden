@@ -7,7 +7,7 @@ import { formatCell, groupCells, parseCell, parseTrayMarkdown, trayToMarkdown, t
 import { kindDef } from "./map/kinds.ts";
 import type { MapEntity, Site } from "./map/model.ts";
 import { siteTemplate } from "./map/template.ts";
-import type { CareEvent, Garden, GardenData, Photo, Planting, Species, Tray } from "./types.ts";
+import type { CareEvent, Garden, GardenData, Photo, Planting, RainDay, Species, Tray } from "./types.ts";
 
 export type ActionCtx = { db: GardenDB; data: GardenData; by: string | null; today: string };
 
@@ -518,4 +518,17 @@ export async function migrateCountedNames(ctx: ActionCtx): Promise<number> {
   await putRecords(db, "trays", trays);
   for (const id of removed) await deleteRecord(db, "species", id);
   return changedPlantings.size + changedSpecies.length + removed.length;
+}
+
+// ---------- Rain ----------
+
+/** Saves rain records (from the weather service, or the garden's gauge). */
+export async function recordRain(ctx: ActionCtx, days: RainDay[]) {
+  if (days.length) await putRecords(ctx.db, "rain", days);
+}
+
+/** A reading from the garden's own rain gauge, which always wins; null clears it so the weather service fills the day in again. */
+export async function setGaugeRain(ctx: ActionCtx, date: string, inches: number | null) {
+  if (inches == null) return deleteRecord(ctx.db, "rain", date);
+  await putRecords(ctx.db, "rain", [{ id: date, date, inches: Math.max(0, Math.round(inches * 100) / 100), source: "gauge", by: ctx.by, updatedAt: now() }]);
 }

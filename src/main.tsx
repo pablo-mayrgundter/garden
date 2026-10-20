@@ -4,6 +4,7 @@ import { createHashRouter, Link, Outlet, RouterProvider } from "react-router";
 import { AssistantPanel } from "./components/AssistantPanel";
 import { GardenerPicker } from "./components/forms";
 import { Nav } from "./components/Nav";
+import { RainSync } from "./components/RainSync";
 import { GardenProvider, useGarden } from "./lib/GardenContext";
 import { NewPlantPage, PlantPage, PlantsPage } from "./pages/Plants";
 import { PlantingPage } from "./pages/Planting";
@@ -11,7 +12,6 @@ import { SettingsPage } from "./pages/Settings";
 import { Today } from "./pages/Today";
 import { NewTrayPage, TrayPage, TraysPage } from "./pages/Trays";
 import { CalendarPage } from "./pages/Calendar";
-import { MapPage } from "./pages/Map";
 import "./styles.css";
 
 function Layout() {
@@ -47,6 +47,7 @@ function Layout() {
         <Outlet />
       </main>
       <AssistantPanel />
+      <RainSync />
     </>
   );
 }
@@ -72,7 +73,8 @@ const router = createHashRouter([
       { path: "/trays/new", element: <NewTrayPage /> },
       { path: "/trays/:id", element: <TrayPage /> },
       { path: "/calendar", element: <CalendarPage /> },
-      { path: "/map", element: <MapPage /> },
+      // The map is the biggest page by far; it loads when it's first opened.
+      { path: "/map", lazy: async () => ({ Component: (await import("./pages/Map")).MapPage }) },
       { path: "/plantings/:id", element: <PlantingPage /> },
       { path: "/plants", element: <PlantsPage /> },
       { path: "/plants/new", element: <NewPlantPage /> },

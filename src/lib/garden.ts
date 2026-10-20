@@ -1,5 +1,6 @@
 // Read-side helpers over the in-memory GardenData.
 
+import { rainReaches, rainyDays } from "./weather/rain.ts";
 import { careSchedule, sortCare, type CareItem } from "./schedule.ts";
 import type { Condition } from "./model.ts";
 import type { CareEvent, GardenData, Note, Photo, Planting, Species, Task } from "./types.ts";
@@ -71,6 +72,7 @@ export function coverPhotos(data: GardenData) {
 export function plantingViews(data: GardenData, today: string): PlantingView[] {
   const species = new Map(data.species.map((s) => [s.id, s]));
   const trays = new Map(data.trays.map((t) => [t.id, t]));
+  const rain = rainyDays(data.rain ?? [], today);
   return data.plantings
     .filter((p) => species.has(p.speciesId))
     .map((p) => {
@@ -85,6 +87,7 @@ export function plantingViews(data: GardenData, today: string): PlantingView[] {
           waterEveryDays: s.waterEveryDays,
           milestones: s.milestones,
           events: data.events.filter((e) => e.plantingId === p.id),
+          rain: rain.length && rainReaches(p, data) ? rain : undefined,
         },
         today,
       );

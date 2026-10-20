@@ -5,8 +5,9 @@ import { addDays, daysBetween, formatDate } from "./dates.ts";
 import { plantingViews } from "./garden.ts";
 import type { EventType } from "./model.ts";
 import type { GardenData } from "./types.ts";
+import { RAIN_WATERS_IN } from "./weather/rain.ts";
 
-export type EntryKind = "logged" | "sown" | "scheduled" | "overdue" | "task" | "task-done";
+export type EntryKind = "logged" | "sown" | "scheduled" | "overdue" | "task" | "task-done" | "rain";
 
 export type CalendarEntry = {
   date: string;
@@ -70,6 +71,22 @@ export function calendarEntries(data: GardenData, today: string, from: string, t
     });
   }
 
+  // Rain (the garden's own gauge, the weather record, or today's likely rain)
+  for (const r of data.rain ?? []) {
+    if (!inRange(r.date) || r.inches < 0.01) continue;
+    const amount = `${r.inches.toFixed(2)} in`;
+    const counts = r.inches >= RAIN_WATERS_IN ? "; counts as watering for the beds outdoors" : "";
+    const from = r.source === "gauge" ? "from the rain gauge" : r.source === "expected" ? `expected (${r.chance ?? "?"}% chance)` : "for the garden's location, from Open-Meteo";
+    out.push({
+      date: r.date,
+      kind: "rain",
+      icon: r.source === "expected" ? "🌦️" : "🌧️",
+      text: `${r.source === "expected" ? "Rain likely" : "Rain"} ${amount}`,
+      detail: `Rain ${amount}, ${from}${counts}`,
+      href: null,
+    });
+  }
+
   // Sowings
   const sown = new Map<string, string[]>();
   for (const p of plantings) if (p.sownAt && inRange(p.sownAt)) sown.set(p.sownAt, [...(sown.get(p.sownAt) ?? []), p.id]);
@@ -120,7 +137,7 @@ export function calendarEntries(data: GardenData, today: string, from: string, t
     });
   }
 
-  const order: Record<EntryKind, number> = { overdue: 0, task: 1, scheduled: 2, sown: 3, logged: 4, "task-done": 5 };
+  const order: Record<EntryKind, number> = { overdue: 0, task: 1, scheduled: 2, sown: 3, rain: 4, logged: 5, "task-done": 6 };
   return out.sort((a, b) => a.date.localeCompare(b.date) || order[a.kind] - order[b.kind] || a.text.localeCompare(b.text));
 }
 

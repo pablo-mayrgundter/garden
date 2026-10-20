@@ -26,6 +26,9 @@ import {
 import { KINDS, kindDef, type FieldDef } from "@/lib/map/kinds";
 import { DEFAULT_SITE, LAYER_KEYS, LAYERS, type Layer, type MapEntity, type Opening, type Site, type Wall } from "@/lib/map/model";
 import { drawEntity, MapPatterns, PAL } from "@/lib/map/render";
+import { Critters } from "@/components/Critters";
+import { formatTemp, prefersFahrenheit, type DayForecast, type Sky } from "@/lib/weather/forecast";
+import { useForecast } from "@/lib/weather/useWeather";
 import { buildingOpenings, clampOpening, newOpening, placeOpening, wallLine, WALLS } from "@/lib/map/openings";
 import { CITIES, CITY_REGIONS, nearestCity, parseLatLng } from "@/lib/map/places";
 import { entityShadow, gardenLocation, shadowShape, sunFrom, sunGroundDirection, sunPosition, type SunPosition } from "@/lib/map/sun";
@@ -68,8 +71,6 @@ function fitView(pj: Projector, width: number, height: number): Pick<View, "zoom
   return { zoom, cx: (b.minX + b.maxX) / 2, cy: (b.minY + b.maxY) / 2 };
 }
 
-/** Kinds whose names are worth printing on the map. */
-const LABELLED = new Set(["house", "shed", "raised-bed", "in-ground-bed", "herb-garden", "seed-station", "fruit-tree", "tree", "compost", "gantry", "patio"]);
 
 export function MapPage() {
   const { data, today, act } = useGarden();
@@ -99,6 +100,7 @@ export function MapPage() {
   const [view, setView] = useState<View>(() => ({ mode: "iso", rot: 1, zoom: 0, cx: 0, cy: 0, ...readView() }));
   const [hidden, setHidden] = useState<Set<Layer>>(new Set());
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
   /** The door or window being edited on the selected building. */
   const [openingSel, setOpeningSel] = useState<string | null>(null);
   const drag = useRef<Drag | null>(null);
@@ -182,14 +184,37 @@ export function MapPage() {
   const when = new Date(clock.at);
   const where = gardenLocation(site, when);
   const sun = sunPosition(when, where.lat, where.lon);
+
+  // ---------- Weather and wildlife ----------
+
+  const [wildlife, setWildlife] = useState(true);
+  const forecast = useForecast();
+  /** A forecast day being shown on the map: its sky while the clock is on that day. */
+  const [sim, setSim] = useState<{ date: string; sky: Sky; wind: number | null } | null>(null);
+  useEffect(() => {
+    if (clock.live) setSim(null);
+  }, [clock.live]);
+  const sky: Sky = sim && localDate(when) === sim.date ? sim.sky : "sun";
+  const sway = (sky === "rain" ? 2.2 : sky === "snow" ? 1.4 : 1) * (sim?.wind && sim.wind >= 15 ? 1.6 : 1);
+  const shadowOpacity = { sun: 0.2, cloud: 0.06, rain: 0, snow: 0.05 }[sky];
+  const pickDay = (day: DayForecast) => {
+    if (sim?.date === day.date) return setClock({ live: true, at: Date.now() });
+    // Same time of day, on that day.
+    const d = new Date(clock.at);
+    const [y, m, dd] = day.date.split("-").map(Number);
+    d.setFullYear(y, m - 1, dd);
+    setClock({ live: false, at: d.getTime() });
+    setSim({ date: day.date, sky: day.sky, wind: day.wind });
+  };
+
   const shadowPaths = useMemo(() => {
-    if (!shadows || sun.altitude <= 0) return "";
+    if (!shadows || sun.altitude <= 0 || !shadowOpacity) return "";
     return entities.solid
       .map((e) => entityShadow(e, shadowShape(e.kind, kindDef(e.kind).flat), sun, site.northDeg))
       .filter((poly): poly is [number, number][] => !!poly && poly.length > 2)
       .map((poly) => poly.map(([x, y], i) => `${i ? "L" : "M"}${pj.p(x, y, 0.03).map((v) => v.toFixed(3)).join(" ")}`).join(" ") + " Z")
       .join(" ");
-  }, [shadows, sun.altitude, sun.azimuth, entities.solid, site.northDeg, pj]);
+  }, [shadows, shadowOpacity, sun.altitude, sun.azimuth, entities.solid, site.northDeg, pj]);
 
   // ---------- Pointer handling ----------
 
@@ -235,7 +260,14 @@ export function MapPage() {
   };
 
   const onPointerMove = (ev: RPointerEvent<SVGSVGElement>) => {
-    if (!pointers.current.has(ev.pointerId)) return;
+    if (!pointers.current.has(ev.pointerId)) {
+      // Just hovering (a mouse with no button down): label whatever is under the pointer.
+      if (ev.pointerType === "mouse") {
+        const id = (ev.target as Element).closest("[data-id]")?.getAttribute("data-id") ?? null;
+        if (id !== hoverId) setHoverId(id);
+      }
+      return;
+    }
     const pt = localPoint(ev);
     pointers.current.set(ev.pointerId, pt);
     if (pinch.current && pointers.current.size === 2) {
@@ -404,10 +436,12 @@ export function MapPage() {
       </div>
 
       <div className="map-layout">
+        <div className="map-main">
         <div className="map-wrap card" ref={wrapRef}>
           <svg
             ref={svgRef}
-            className="map-svg"
+            className={`map-svg ${wildlife ? "" : "still"}`}
+            style={{ "--sway": sway } as React.CSSProperties}
             width={size.w}
             height={size.h}
             tabIndex={0}
@@ -417,6 +451,7 @@ export function MapPage() {
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
+            onPointerLeave={() => setHoverId(null)}
             onKeyDown={onKeyDown}
           >
             <MapPatterns />
@@ -434,19 +469,22 @@ export function MapPage() {
                   <clipPath id="lot-clip">
                     <path d={lotPath} />
                   </clipPath>
-                  <path d={shadowPaths} fill="#1d2440" fillOpacity={0.2} pointerEvents="none" clipPath="url(#lot-clip)" />
+                  <path d={shadowPaths} fill="#1d2440" fillOpacity={shadowOpacity} pointerEvents="none" clipPath="url(#lot-clip)" />
                 </>
               )}
+              {sky === "snow" && <path d={lotPath} fill="#fbfdff" fillOpacity={0.55} pointerEvents="none" />}
               {entities.solid.map((e) => (
                 <g key={e.id} data-id={e.id} className={`ent ent-${e.kind}`}>
                   {drawEntity(e, ctx)}
                 </g>
               ))}
+              <Critters pj={pj} entities={entities.all} data={data} site={site} sun={sun} sky={sky} zoom={view.zoom || 1} enabled={wildlife && !empty} />
               {selected && <Selection pj={pj} e={selected} zoom={view.zoom || 1} resizable={kindDef(selected.kind).resizable ?? false} openingSel={openingSel} />}
             </g>
-            {shadows && <Sun pj={pj} site={site} sun={sun} toScreen={toScreen} w={size.w} h={size.h} />}
+            <WeatherFx sky={sky} w={size.w} h={size.h} />
+            {shadows && <Sun pj={pj} site={site} sun={sun} toScreen={toScreen} w={size.w} h={size.h} dim={sky !== "sun"} />}
             {night > 0 && <rect width={size.w} height={size.h} fill="#141b3c" fillOpacity={night} pointerEvents="none" />}
-            <Labels entities={entities.all} pj={pj} toScreen={toScreen} zoom={view.zoom} selectedId={selectedId} />
+            <Labels entities={entities.all} pj={pj} toScreen={toScreen} hoverId={drag.current ? null : hoverId} selectedId={selectedId} />
             <Compass pj={pj} site={site} x={size.w - COMPASS_INSET} y={size.h - COMPASS_INSET} turning={northDraft != null} />
           </svg>
 
@@ -473,6 +511,9 @@ export function MapPage() {
             approximate={where.approximate}
             shadows={shadows}
             setShadows={setShadows}
+            wildlife={wildlife}
+            setWildlife={setWildlife}
+            sim={sim && sky === sim.sky ? sim : null}
           />
 
           {empty && (
@@ -485,6 +526,8 @@ export function MapPage() {
               </div>
             </div>
           )}
+        </div>
+        <ForecastStrip forecast={forecast} picked={sim?.date ?? null} onPick={pickDay} />
         </div>
 
         <aside className="map-panel stack">
@@ -613,7 +656,7 @@ function Selection({ pj: base, e, zoom, resizable, openingSel }: { pj: Projector
  * The sun, at the edge of the map in the direction of its real place in the
  * sky (out past the lot that way, raised by its altitude), with its altitude.
  */
-function Sun({ pj, site, sun, toScreen, w, h }: { pj: Projector; site: Site; sun: SunPosition; toScreen: (x: number, y: number) => [number, number]; w: number; h: number }) {
+function Sun({ pj, site, sun, toScreen, w, h, dim }: { pj: Projector; site: Site; sun: SunPosition; toScreen: (x: number, y: number) => [number, number]; w: number; h: number; dim?: boolean }) {
   if (sun.altitude < -1) return null;
   const R = Math.max(site.width, site.depth) * 0.62;
   const [ux, uy] = sunGroundDirection(sun, site.northDeg);
@@ -630,7 +673,7 @@ function Sun({ pj, site, sun, toScreen, w, h }: { pj: Projector; site: Site; sun
   const r = 12;
   const color = sun.altitude < 8 ? "#f08a3c" : "#f6b93b";
   return (
-    <g pointerEvents="none" className="map-sun">
+    <g pointerEvents="none" className="map-sun" opacity={dim ? 0.35 : 1}>
       <title>{`Sun ${Math.round(sun.altitude)}° up, from the ${sunFrom(sun.azimuth)}`}</title>
       <circle cx={sx} cy={sy} r={r * 2.3} fill={color} fillOpacity={0.2} />
       {Array.from({ length: 12 }, (_, i) => {
@@ -654,6 +697,9 @@ function SunClock({
   approximate,
   shadows,
   setShadows,
+  wildlife,
+  setWildlife,
+  sim,
 }: {
   clock: { live: boolean; at: number };
   setClock: (c: { live: boolean; at: number }) => void;
@@ -661,6 +707,9 @@ function SunClock({
   approximate: boolean;
   shadows: boolean;
   setShadows: (on: boolean) => void;
+  wildlife: boolean;
+  setWildlife: (on: boolean) => void;
+  sim: { date: string; sky: Sky } | null;
 }) {
   const at = new Date(clock.at);
   const minutes = at.getHours() * 60 + at.getMinutes();
@@ -671,6 +720,9 @@ function SunClock({
       <div className="row small clock-head">
         <label className="check" title="Sun and shadows">
           <input type="checkbox" checked={shadows} onChange={(e) => setShadows(e.target.checked)} /> ☀️
+        </label>
+        <label className="check" title="Birds, butterflies and cats, and trees in the breeze">
+          <input type="checkbox" checked={wildlife} onChange={(e) => setWildlife(e.target.checked)} /> 🐦
         </label>
         <strong>{time}</strong>
         <span className="muted sun-text">
@@ -710,21 +762,99 @@ function SunClock({
           />
         </div>
       )}
+      {sim && <div className="small">Showing the forecast: {SKY_WORDS[sim.sky]}</div>}
       {shadows && approximate && <div className="small muted">Location guessed from your time zone; set it under The lot.</div>}
     </div>
   );
 }
 
-function Labels({ entities, pj, toScreen, zoom, selectedId }: { entities: MapEntity[]; pj: Projector; toScreen: (x: number, y: number) => [number, number]; zoom: number; selectedId: string | null }) {
+const SKY_WORDS: Record<Sky, string> = { sun: "☀️ sun", cloud: "☁️ clouds", rain: "🌧️ rain", snow: "🌨️ snow" };
+
+/** Rain, snow or clouds over the scene, in screen space so they keep falling at the same size at any zoom. */
+function WeatherFx({ sky, w, h }: { sky: Sky; w: number; h: number }) {
+  if (sky === "sun") return null;
+  const tint = { cloud: ["#5d6678", 0.12], rain: ["#34445a", 0.24], snow: ["#eef3f8", 0.16] }[sky] as [string, number];
+  return (
+    <g className="weather-fx" pointerEvents="none">
+      <defs>
+        <pattern id="fx-rain" width={46} height={64} patternUnits="userSpaceOnUse">
+          {[[6, 4], [22, 30], [36, 12], [14, 48], [40, 44]].map(([x, y], i) => (
+            <line key={i} x1={x} y1={y} x2={x - 4} y2={y + 14} stroke="#d5e4f2" strokeOpacity={0.75} strokeWidth={1.2} strokeLinecap="round" />
+          ))}
+        </pattern>
+        <pattern id="fx-snow" width={90} height={90} patternUnits="userSpaceOnUse">
+          {[[10, 12, 2.2], [45, 30, 1.6], [70, 8, 2.6], [25, 60, 1.8], [62, 70, 2.2], [84, 48, 1.5], [38, 84, 2]].map(([x, y, r], i) => (
+            <circle key={i} cx={x} cy={y} r={r} fill="#fff" fillOpacity={0.95} />
+          ))}
+        </pattern>
+      </defs>
+      <rect width={w} height={h} fill={tint[0]} fillOpacity={tint[1]} />
+      {sky === "cloud" &&
+        [0, 1, 2].map((i) => (
+          <ellipse key={i} className={`cloud-shadow c${i}`} cx={w * (0.2 + i * 0.3)} cy={h * (0.3 + (i % 2) * 0.35)} rx={w * 0.22} ry={h * 0.16} fill="#1d2440" fillOpacity={0.09} />
+        ))}
+      {sky === "rain" && <rect className="rainfall" x={0} y={-64} width={w} height={h + 128} fill="url(#fx-rain)" />}
+      {sky === "snow" && <rect className="snowfall" x={-90} y={-90} width={w + 180} height={h + 180} fill="url(#fx-snow)" />}
+    </g>
+  );
+}
+
+/** The week's forecast under the map; tap a day to see its weather on the map. */
+function ForecastStrip({ forecast, picked, onPick }: { forecast: ReturnType<typeof useForecast>; picked: string | null; onPick: (d: DayForecast) => void }) {
+  const fahrenheit = prefersFahrenheit();
+  if (forecast.status === "no-location")
+    return <p className="small muted forecast-note">Set the garden&rsquo;s location (The lot, in the panel) to see the week&rsquo;s forecast here.</p>;
+  if (forecast.status === "loading") return <p className="small muted forecast-note">Getting the forecast…</p>;
+  if (forecast.status === "error")
+    return (
+      <p className="small muted forecast-note">
+        The forecast isn&rsquo;t available right now ({forecast.error}). <button className="ghost small" onClick={forecast.retry}>Try again</button>
+      </p>
+    );
+  const { days, source } = forecast.value;
+  return (
+    <div className="forecast">
+      <div className="forecast-days" role="list">
+        {days.map((d) => {
+          const date = new Date(`${d.date}T12:00:00`);
+          return (
+            <button
+              key={d.date}
+              role="listitem"
+              className={`forecast-day ${picked === d.date ? "on" : ""}`}
+              onClick={() => onPick(d)}
+              title={`${d.summary}${d.precip != null ? `, ${d.precip}% chance of rain` : ""}${d.wind ? `, wind to ${d.wind} mph` : ""}. Show it on the map.`}
+            >
+              <span className="dow">{date.toLocaleDateString(undefined, { weekday: "short" })}</span>
+              <span className="icon">{d.icon}</span>
+              <span className="temps">
+                <strong>{formatTemp(d.high, fahrenheit)}</strong> <span className="muted">{formatTemp(d.low, fahrenheit)}</span>
+              </span>
+              <span className="precip">{d.precip ? `💧${d.precip}%` : "\u00a0"}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="small muted forecast-note">
+        {picked ? "Showing that day on the map; tap it again (or Now) to go back. " : "Tap a day to see it on the map. "}
+        Forecast from {source}.
+      </p>
+    </div>
+  );
+}
+
+/** Names stay out of the way: the thing under the pointer gets a light label, the selected one a bold one. */
+function Labels({ entities, pj, toScreen, hoverId, selectedId }: { entities: MapEntity[]; pj: Projector; toScreen: (x: number, y: number) => [number, number]; hoverId: string | null; selectedId: string | null }) {
   return (
     <g className="map-labels" pointerEvents="none">
       {entities.map((e) => {
+        const selected = e.id === selectedId;
+        if (!selected && e.id !== hoverId) return null;
         const isArea = e.kind === "area";
-        if (!(e.id === selectedId || isArea || (LABELLED.has(e.kind) && zoom >= 3.5))) return null;
         const [sx, sy] = isArea ? pj.p(e.x + e.w / 2, e.y + e.d / 2, 0) : pj.p(e.x + e.w / 2, e.y + e.d / 2, e.z + e.h);
         const [x, y] = toScreen(sx, sy);
         return (
-          <text key={e.id} x={x} y={isArea ? y : y - 6} className={isArea ? "area-label" : "ent-label"} textAnchor="middle">
+          <text key={e.id} x={x} y={isArea ? y : y - 6} className={`${isArea ? "area-label" : "ent-label"} ${selected ? "selected" : "hover"}`} textAnchor="middle">
             {e.name}
           </text>
         );

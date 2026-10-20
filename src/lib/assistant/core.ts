@@ -7,7 +7,8 @@ import { compassPoint, longSideBearing } from "../map/geometry.ts";
 import { KINDS, kindDef } from "../map/kinds.ts";
 import { buildingOpenings } from "../map/openings.ts";
 import { DEFAULT_SITE, type MapEntity } from "../map/model.ts";
-import { formatDate, isDate } from "../dates.ts";
+import { addDays, formatDate, isDate } from "../dates.ts";
+import { RAIN_WATERS_IN } from "../weather/rain.ts";
 import { cellRange, eventsFor, notesFor, photosFor, plantingLabel, plantStates, plantingViews, sortedTrays, tasksFor, type PlantingView } from "../garden.ts";
 import { CONDITION_KEYS, CONDITIONS, EVENT_TYPES, PLANTING_STATUSES } from "../model.ts";
 import type { CareItem } from "../schedule.ts";
@@ -161,6 +162,13 @@ export function buildContext(data: GardenData, userName: string | null, location
   }
 
   parts.push(`Planters: ${sortedTrays(data).map((t) => `${t.name} [${t.id}]`).join(", ")}`);
+  const recentRain = (data.rain ?? []).filter((r) => r.date >= addDays(today, -10) && r.date <= today && r.inches >= 0.01).sort((a, b) => a.date.localeCompare(b.date));
+  if (recentRain.length)
+    parts.push(
+      `Rain at the garden, last 10 days (${RAIN_WATERS_IN} in or more counts as watering for outdoor plantings in beds, not for indoor trays): ${recentRain
+        .map((r) => `${r.date} ${r.inches.toFixed(2)} in${r.source === "expected" ? ` (expected, ${r.chance ?? "?"}% chance)` : r.source === "gauge" ? " (rain gauge)" : ""}`)
+        .join("; ")}`,
+    );
   parts.push(`All plantings:\n${all.map(plantingSummary).join("\n")}`);
   return { text: `<app_context>\n${parts.join("\n\n")}\n</app_context>`, photoId };
 }

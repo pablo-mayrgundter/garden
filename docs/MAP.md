@@ -105,7 +105,7 @@ A kind can also say:
 - Zoom and pan are a single SVG transform over the scene, so panning never redraws. Strokes use `vector-effect: non-scaling-stroke` and patterns are in scene units, so the drawing scales like ink on paper.
 - Order: flat kinds first (by layer, then largest first), then the sun's shadows, then solids back to front with `paintOrder`. In the isometric view one solid goes before another when its footprint lies wholly behind the other's along either ground axis (as the view sees them), so a long fence along the front covers the beds behind it even though its middle is far away; overlapping footprints (netting over a bed) fall back to center depth. The plan view draws lowest tops first. Inside a drawer, `Faces` sorts a solid's faces by depth.
 - Drawers get `{ pj, data, today, zoom }`. They work in world feet and project through `pj`, so the same code draws both views and all rotations. Pins (`Pin`) and the selection handle divide by `zoom` to keep a constant size on screen.
-- Labels are drawn in screen space on top, so text stays crisp. Areas are always labeled, and beds, buildings and trees once you zoom in.
+- Labels are drawn in screen space on top, so text stays crisp. They stay out of the way: hovering something shows its name in a light label, and the selected thing's name shows in full weight.
 
 ## Sun and shadows
 
@@ -116,6 +116,31 @@ A kind can also say:
 - **The clock** follows the real time by default. Drag through the day or pick a date to move the sun; *Now* goes back to live. The ☀️ box turns sun and shadows off.
 - **Location** (lot settings): pick a city from the list (`src/lib/map/places.ts`), paste coordinates (`parseLatLng` reads Google Maps' `@30.1836998,-97.7891487`, whole Google Maps links, preferring a dropped pin's `!3d…!4d…` over the view's center, `30.18, -97.78`, and `30.18° N, 97.78° W`), type latitude and longitude, or use this device's location. It's kept to four decimals (about 10 m).
 - **North**: drag the compass on the map until its N points at true north on your lot (the screen direction is turned back into a ground direction with `unprojectDelta`, so it works in every view and rotation). The sun, shadows and bed headings follow as you drag; it's saved when you let go. The lot settings have the same angle as a number.
+
+## Weather
+
+`src/lib/weather/`. Nothing here is part of the garden: results are cached in the viewer's browser (the forecast for an hour, frost dates for good) and the location is rounded to about a kilometer before it's sent.
+
+- **Forecast** (`forecast.ts`): NOAA's api.weather.gov for US locations (`/points/{lat},{lon}`, then its forecast). Open-Meteo is used elsewhere, or if NOAA fails. Both answer browsers directly with no key. NOAA's day and night periods become days: the high and summary come from the day, the low from that night. Each day gets a sky (`sun`, `cloud`, `rain`, `snow`), an icon, the chance of rain and the highest wind. Temperatures are kept in °F and shown in the viewer's units.
+- **On the map:** the week runs along under the map. Tapping a day sets the clock to that day and simulates its sky. Clouds dim the scene and send soft cloud shadows drifting over, and sun shadows fade. Rain and snow fall in screen space, so they look the same at any zoom. Snow whitens the ground, and rain and wind make the trees sway harder. Tap the day again, or *Now*, to go back to live.
+- **Frost dates** (`climate.ts`): 30 full years of daily lows from Open-Meteo's historical weather (ERA5 reanalysis, about a 10 km grid). For each year it finds the last freezing night of spring and the first of autumn, at 32°F (frost) and 28°F (hard freeze), then averages them. Spring and autumn swap in the southern hemisphere. A threshold reached in fewer than half the years reads "rarely".
+- **Calendar:** the week's forecast icons with highs and lows, and the four frost dates marked every year, with a summary card.
+- **Rain** (`rain.ts`): rain that fell in the garden is part of the garden. It's kept in the `rain` store, one record per day, and travels in the garden file.
+  - Where amounts come from: Open-Meteo's daily precipitation for the location. That's the forecast service's past days for the last two weeks, and its archive for older days. While the app is open (`RainSync`), it fills in missing days up to 120 days back and refreshes today every hour.
+  - Today: counts as *expected* when the forecast chance is at least 60%, and is replaced by the recorded amount once the day is over.
+  - Your own gauge: a reading entered on the calendar always wins.
+  - Watering: a day with 0.1 in or more counts as watering, but only for outdoor plantings. That means a bed planted in rows, or a planter linked to a bed or container on the map (`rainReaches`); a seed tray on the seed station never gets rained on. It shows in the planting's watering status and history, on the calendar, and in the assistant's context.
+
+## Animation
+
+All of it can be turned off with the 🐦 box in the clock, and it stays still for people who prefer reduced motion.
+
+- **Trees and shrubs sway** from the bottom of the canopy, each at its own pace. It's a CSS animation whose `--sway` grows with rain and wind.
+- **Visitors** (`src/lib/map/wildlife.ts` decides who comes and where; `src/components/Critters.tsx` runs the motion in its own animation-frame loop, re-rendering only itself):
+  - **Songbirds** (cardinals, jays, sparrows, goldfinches, robins, chickadees) fly in to perch in trees, shrubs and hedges and on fence tops. They hop about, sometimes move to another tree, then leave. There are more by day and fewer in rain.
+  - **Butterflies** come to beds with flowering plants, and **hummingbirds** to tubular flowers. The plants are matched by name in the seed library (`BUTTERFLY_PLANTS`, `HUMMINGBIRD_PLANTS`), or by a seed library category of "flower". This is the start of making plant choices show up as visitors.
+  - **Cats** (Mochi, Pepper, Marmalade, Tux, Calico, Smokey, Biscuit, Snowball) wander in now and then from the nearest edge. Each sits on open ground with a swishing tail and the odd blink, then wanders off. They stay in when it's wet.
+- To add a visitor or make a plant attract one, add to `VISITORS` and `attractors()`, and give it a sprite in `Critters.tsx`.
 
 ## Interaction
 
