@@ -610,12 +610,12 @@ function SunClock({
   const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return (
     <div className="map-clock">
-      <div className="row small">
+      <div className="row small clock-head">
         <label className="check" title="Sun and shadows">
           <input type="checkbox" checked={shadows} onChange={(e) => setShadows(e.target.checked)} /> ☀️
         </label>
         <strong>{time}</strong>
-        <span className="muted">
+        <span className="muted sun-text">
           {sun.altitude > 0 ? `sun ${Math.round(sun.altitude)}° up, from the ${sunFrom(sun.azimuth)}` : "sun down"}
         </span>
         {clock.live ? <span className="live-dot" title="Following the real time">live</span> : (
