@@ -4,15 +4,25 @@
 // instances. A remote backup/sync backend can be added later behind these functions.
 
 import { openDB, type IDBPDatabase } from "idb";
+import type { MapEntity } from "./map/model.ts";
 import type { CareEvent, ChatRecord, Garden, GardenData, Note, Photo, Planting, Species, Task, Tray } from "./types.ts";
 
 export type GardenDB = IDBPDatabase;
 export type Provider = "claude" | "ollama";
 
-const DB_VERSION = 1;
-export const RECORD_STORES = ["species", "trays", "plantings", "events", "notes", "photos", "tasks"] as const;
+const DB_VERSION = 2;
+export const RECORD_STORES = ["species", "trays", "plantings", "events", "notes", "photos", "tasks", "mapEntities"] as const;
 export type RecordStore = (typeof RECORD_STORES)[number];
-type StoreRecord = { species: Species; trays: Tray; plantings: Planting; events: CareEvent; notes: Note; photos: Photo; tasks: Task };
+type StoreRecord = {
+  species: Species;
+  trays: Tray;
+  plantings: Planting;
+  events: CareEvent;
+  notes: Note;
+  photos: Photo;
+  tasks: Task;
+  mapEntities: MapEntity;
+};
 
 export function newId(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => (b % 36).toString(36)).join("");
@@ -20,27 +30,45 @@ export function newId(): string {
 
 const now = () => new Date().toISOString();
 
-export async function openGardenDb(name = "garden"): Promise<GardenDB> {
-  return openDB(name, DB_VERSION, {
-    upgrade(db) {
-      db.createObjectStore("meta");
-      for (const s of RECORD_STORES) db.createObjectStore(s, { keyPath: "id" });
-      db.createObjectStore("photoBlobs");
-      const chat = db.createObjectStore("chat", { keyPath: "seq", autoIncrement: true });
-      chat.createIndex("threadId", "threadId");
+export type OpenHooks = {
+  /** Another tab still has an older version of the database open, so the upgrade has to wait for it. */
+  blocked?: () => void;
+  /** A newer version of the app in another tab wants to upgrade the database; this connection has been closed. */
+  blocking?: () => void;
+};
+
+export async function openGardenDb(name = "garden", hooks: OpenHooks = {}): Promise<GardenDB> {
+  const db: GardenDB = await openDB(name, DB_VERSION, {
+    blocked: () => hooks.blocked?.(),
+    // Step aside so the other tab's upgrade isn't stuck waiting on this one.
+    blocking: () => {
+      db.close();
+      hooks.blocking?.();
+    },
+    upgrade(db, oldVersion) {
+      // Each step brings a database from the previous version; new browsers run them all.
+      if (oldVersion < 1) {
+        db.createObjectStore("meta");
+        for (const s of ["species", "trays", "plantings", "events", "notes", "photos", "tasks"]) db.createObjectStore(s, { keyPath: "id" });
+        db.createObjectStore("photoBlobs");
+        const chat = db.createObjectStore("chat", { keyPath: "seq", autoIncrement: true });
+        chat.createIndex("threadId", "threadId");
+      }
+      if (oldVersion < 2) db.createObjectStore("mapEntities", { keyPath: "id" });
     },
   });
+  return db;
 }
 
 /** Everything in this browser's garden, or null when no garden has been started here yet. */
 export async function loadAll(db: GardenDB): Promise<GardenData | null> {
   const tx = db.transaction(["meta", ...RECORD_STORES], "readonly");
-  const [garden, species, trays, plantings, events, notes, photos, tasks] = await Promise.all([
+  const [garden, species, trays, plantings, events, notes, photos, tasks, mapEntities] = await Promise.all([
     tx.objectStore("meta").get("garden"),
     ...RECORD_STORES.map((s) => tx.objectStore(s).getAll()),
   ]);
   if (!garden) return null;
-  return { garden, species, trays, plantings, events, notes, photos, tasks } as GardenData;
+  return { garden, species, trays, plantings, events, notes, photos, tasks, mapEntities } as GardenData;
 }
 
 export async function createGarden(db: GardenDB, input: { name: string; timezone: string; gardener: string | null }): Promise<void> {

@@ -1,10 +1,17 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { ActionCtx } from "./actions.ts";
+import { migrateCountedNames, type ActionCtx } from "./actions.ts";
 import { todayIn } from "./dates.ts";
 import { createGarden, getPhotoBlob, importBackup, loadAll, migrateBundledPhotos, openGardenDb, type Backup, type GardenDB } from "./store.ts";
 import type { GardenData, Photo } from "./types.ts";
 
 const GARDENER_KEY = "garden.gardener";
+
+/** Loads the garden, first bringing older data up to date (e.g. after opening an old garden file). */
+async function loadTidied(db: GardenDB): Promise<GardenData | null> {
+  const data = await loadAll(db);
+  if (data && (await migrateCountedNames({ db, data, by: null, today: "" }))) return loadAll(db);
+  return data;
+}
 
 type GardenState = {
   db: GardenDB;
@@ -38,10 +45,15 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
   const [, setTick] = useState(0);
 
   const [loaded, setLoaded] = useState(false);
+  /** Waiting on another tab that has an older version of the garden open. */
+  const [blocked, setBlocked] = useState(false);
+  /** A newer version of the app took over the garden in another tab. */
+  const [superseded, setSuperseded] = useState(false);
 
   useEffect(() => {
-    openGardenDb()
+    openGardenDb(undefined, { blocked: () => setBlocked(true), blocking: () => setSuperseded(true) })
       .then(async (d) => {
+        setBlocked(false);
         // Gardens from the first version referenced photos bundled with the site; copy them into this browser.
         const moved = await migrateBundledPhotos(d, async (src) => {
           const res = await fetch(staticUrl(src));
@@ -49,7 +61,7 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
         });
         if (moved) console.info(`Copied ${moved} photos into this browser's storage.`);
         setDb(d);
-        setData(await loadAll(d));
+        setData(await loadTidied(d));
         setLoaded(true);
       })
       .catch((e) => setError(String(e?.message ?? e)));
@@ -59,7 +71,7 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const reload = useCallback(async () => {
-    if (db) setData(await loadAll(db));
+    if (db) setData(await loadTidied(db));
   }, [db]);
 
   const setGardener = useCallback((name: string | null) => {
@@ -97,12 +109,44 @@ export function GardenProvider({ children }: { children: React.ReactNode }) {
     [db, data, today, gardener, setGardener, act, latest, reload],
   );
 
+  if (superseded)
+    return (
+      <main className="auth-wrap">
+        <div className="card auth-card">
+          <h1>The app was updated</h1>
+          <p className="muted">A newer version of the app opened this garden in another tab. Reload to switch this tab to it.</p>
+          <button className="primary" onClick={() => location.reload()}>Reload</button>
+        </div>
+      </main>
+    );
+  if (error && /VersionError|less than the existing version/i.test(error))
+    return (
+      <main className="auth-wrap">
+        <div className="card auth-card">
+          <h1>This garden is newer than this page</h1>
+          <p className="muted">A newer version of the app has already updated this garden in this browser. Reload to get it.</p>
+          <button className="primary" onClick={() => location.reload()}>Reload</button>
+        </div>
+      </main>
+    );
   if (error)
     return (
       <main className="auth-wrap">
         <div className="card auth-card">
           <h1>Can&rsquo;t open the garden</h1>
           <p className="muted">This browser blocked local storage ({error}). Try a regular (not private) window.</p>
+        </div>
+      </main>
+    );
+  if (blocked && !loaded)
+    return (
+      <main className="auth-wrap">
+        <div className="card auth-card">
+          <h1>Updating the garden…</h1>
+          <p className="muted">
+            This version of the app needs to update how the garden is stored, but the garden is open in another tab or window running an older version.
+            Close or reload that tab and this one will open by itself.
+          </p>
         </div>
       </main>
     );
@@ -167,6 +211,25 @@ function Welcome({ db, onReady, setGardener }: { db: GardenDB; onReady: () => Pr
               if (f) run(async () => importBackup(db, JSON.parse(await f.text()) as Backup));
             }}
           />
+        </div>
+        <div className="stack" style={{ gap: 8, marginTop: 18, textAlign: "center" }}>
+          <span className="small muted">or look around first, in a copy of our herb garden (packets, seed tray, photos and map)</span>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                // The sample is an ordinary garden file published next to the app, fetched only when asked for.
+                const res = await fetch(staticUrl("samples/herb-garden.json"));
+                if (!res.ok) throw new Error("Couldn't load the sample garden.");
+                const backup = (await res.json()) as Backup;
+                backup.data.garden.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+                await importBackup(db, backup);
+              })
+            }
+          >
+            {busy ? "Loading…" : "🌿 Explore the sample garden"}
+          </button>
         </div>
         {error && <p className="error" style={{ marginTop: 12 }}>{error}</p>}
       </div>

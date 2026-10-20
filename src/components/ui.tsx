@@ -4,7 +4,9 @@ import { deleteEvent, deleteNote, logCare, markSown, setTaskDone } from "@/lib/a
 import { formatDate, relativeDay } from "@/lib/dates";
 import { cellRange, type PlantingView } from "@/lib/garden";
 import { useGarden, usePhotoUrl } from "@/lib/GardenContext";
+import { CONDITIONS } from "@/lib/model";
 import type { CareItem, CareStatus } from "@/lib/schedule";
+import { RowBed } from "./RowBed";
 import type { CareEvent, Note, Task, Tray } from "@/lib/types";
 
 export function Photo({ id, alt, className, link }: { id: string | null | undefined; alt: string; className?: string; link?: boolean }) {
@@ -79,6 +81,7 @@ export const EVENT_LABEL: Record<string, { label: string; icon: string }> = {
   potted_up: { label: "Potted up", icon: "🪴" },
   transplanted: { label: "Transplanted", icon: "🏡" },
   harvested: { label: "Harvested", icon: "🧺" },
+  observed: { label: "Checked", icon: "🔎" },
   other: { label: "Other", icon: "📝" },
 };
 
@@ -137,13 +140,17 @@ export function TrayGrid({
   covers,
   urgent,
   mini,
+  preview,
 }: {
   tray: Tray;
   plantings: PlantingView[];
   covers: Map<string, string>;
   urgent?: Map<string, CareStatus>;
   mini?: boolean;
+  /** A bed's drawing only, for lists. */
+  preview?: boolean;
 }) {
+  if (tray.layout === "rows") return <RowBed tray={tray} plantings={plantings} mini={mini} preview={preview} />;
   const cells: React.ReactNode[] = [];
   const covered = new Set<string>();
   for (const row of tray.rows) {
@@ -230,6 +237,8 @@ export function EventLog({ events }: { events: CareEvent[] }) {
           <span className="date">{formatDate(e.date)}</span>
           <span style={{ flex: 1 }}>
             {EVENT_LABEL[e.type]?.icon} {EVENT_LABEL[e.type]?.label ?? e.type}
+            {e.condition && <strong> {CONDITIONS[e.condition]?.icon} {CONDITIONS[e.condition]?.label}</strong>}
+            {e.plants?.length ? <span className="muted"> · plant{e.plants.length === 1 ? "" : "s"} {e.plants.join(", ")}</span> : null}
             {e.note && <span className="muted"> — {e.note}</span>}
             {e.by && <span className="muted small"> · {e.by}</span>}
             {e.byAssistant && <span className="chip ai" style={{ marginLeft: 6 }}>via assistant</span>}

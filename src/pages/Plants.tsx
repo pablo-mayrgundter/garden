@@ -1,8 +1,9 @@
 import { Link, useParams } from "react-router";
-import { PhotoUpload, SpeciesForm } from "@/components/forms";
+import { SpeciesForm } from "@/components/forms";
 import { Photo, StatusChip } from "@/components/ui";
+import { PacketPhotos } from "@/components/PacketPhotos";
 import { WikipediaCard } from "@/components/WikipediaCard";
-import { cellRange, coverPhotos, photosFor, plantingViews, sortedSpecies } from "@/lib/garden";
+import { cellRange, coverPhotos, plantingViews, sortedSpecies } from "@/lib/garden";
 import { useGarden } from "@/lib/GardenContext";
 
 const EMOJI: Record<string, string> = { herb: "🌿", vegetable: "🥬", succulent: "🪴", flower: "🌸" };
@@ -73,7 +74,6 @@ export function PlantPage() {
   const { data, today } = useGarden();
   const s = data.species.find((x) => x.id === id);
   if (!s) return <p className="empty">That plant isn&rsquo;t in the library. <Link to="/plants">Seed library</Link></p>;
-  const packet = photosFor(data, { speciesId: s.id });
   const plantings = plantingViews(data, today).filter((p) => p.speciesId === s.id);
   const facts: [string, string | null][] = [
     ["Seed company", s.source],
@@ -161,26 +161,16 @@ export function PlantPage() {
         </div>
 
         <div className="stack">
-          {packet.length > 0 && (
-            <section className="card">
-              <h3>Packet photos</h3>
-              <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                {packet.map((ph) => (
-                  <Photo key={ph.id} id={ph.id} alt={ph.caption ?? ""} className="packet" link />
-                ))}
-              </div>
-            </section>
-          )}
+          <section className="card">
+            <h3>Seed packet</h3>
+            <PacketPhotos species={s} />
+          </section>
           {s.wikipediaTitle && (
             <section className="card">
               <h3>From Wikipedia</h3>
               <WikipediaCard title={s.wikipediaTitle} />
             </section>
           )}
-          <section className="card">
-            <h3>Add a packet photo</h3>
-            <PhotoUpload speciesId={s.id} kind={packet.some((p) => p.kind === "packet_front") ? "packet_back" : "packet_front"} today={today} />
-          </section>
         </div>
       </div>
     </>

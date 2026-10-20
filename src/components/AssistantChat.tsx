@@ -14,6 +14,7 @@ function pageLabel(pathname: string): string {
   if (pathname.startsWith("/trays/")) return "this planter";
   if (pathname.startsWith("/plants/")) return "this plant";
   if (pathname.startsWith("/plants")) return "the seed library";
+  if (pathname.startsWith("/map")) return "the garden map";
   return "your garden";
 }
 
@@ -22,11 +23,12 @@ function suggestionsFor(pathname: string): string[] {
     return ["How does it look in the latest photo?", "What should we do this week?", "We just watered it", "When can we harvest?"];
   if (pathname.startsWith("/trays/")) return ["We misted the whole tray", "Which cells are behind schedule?", "What should go in the empty cells?"];
   if (pathname.startsWith("/plants/")) return ["Summarize the packet instructions", "Any tips for growing this indoors?"];
+  if (pathname.startsWith("/map")) return ["Add a 4×8 raised bed next to Bed 3", "Where would a sprinkler reach all the beds?", "Which beds get the most sun?"];
   return ["What needs doing today?", "Which seedlings are late to sprout?", "Plan the egg carton planting with us"];
 }
 
 export default function AssistantChat({ onClose }: { onClose: () => void }) {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const { db, latest, act, gardener, today } = useGarden();
   const [messages, setMessages] = useState<Msg[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -60,7 +62,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
       const update = (fn: (last: Msg) => Msg) => setMessages((m) => [...m.slice(0, -1), fn(m[m.length - 1])]);
       const a = await loadAssistant();
       try {
-        await a.runAssistantTurn({ db, latest, act, gardener, today }, { pathname, message }, (e) => {
+        await a.runAssistantTurn({ db, latest, act, gardener, today }, { pathname: pathname + search, message }, (e) => {
           if (e.t === "text") update((l) => ({ ...l, text: (l.text ?? "") + e.v }));
           else if (e.t === "tool") update((l) => ({ ...l, text: l.text ? `${l.text}\n\n` : l.text, tools: [...(l.tools ?? []), e.summary] }));
           else if (e.t === "error") update((l) => ({ ...l, text: `${l.text ? `${l.text}\n\n` : ""}⚠️ ${e.message}` }));
@@ -72,7 +74,7 @@ export default function AssistantChat({ onClose }: { onClose: () => void }) {
         setBusy(false);
       }
     },
-    [busy, db, latest, act, gardener, today, pathname],
+    [busy, db, latest, act, gardener, today, pathname, search],
   );
 
   const reset = async () => {

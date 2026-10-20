@@ -2,10 +2,14 @@
 // built from the page the user is on, and the garden tools with their handlers.
 
 import { z } from "zod";
-import { addNote, addTask, applyTrayLayout, logCare, trayMarkdown, updatePlanting, type ActionCtx } from "../actions.ts";
+import { addMapEntity, addNote, addTask, applyTrayLayout, deleteMapEntity, logCare, trayMarkdown, updateMapEntity, updatePlanting, type ActionCtx } from "../actions.ts";
+import { compassPoint, longSideBearing } from "../map/geometry.ts";
+import { KINDS, kindDef } from "../map/kinds.ts";
+import { buildingOpenings } from "../map/openings.ts";
+import { DEFAULT_SITE, type MapEntity } from "../map/model.ts";
 import { formatDate, isDate } from "../dates.ts";
-import { cellRange, eventsFor, notesFor, photosFor, plantingLabel, plantingViews, sortedTrays, tasksFor, type PlantingView } from "../garden.ts";
-import { EVENT_TYPES, PLANTING_STATUSES } from "../model.ts";
+import { cellRange, eventsFor, notesFor, photosFor, plantingLabel, plantStates, plantingViews, sortedTrays, tasksFor, type PlantingView } from "../garden.ts";
+import { CONDITION_KEYS, CONDITIONS, EVENT_TYPES, PLANTING_STATUSES } from "../model.ts";
 import type { CareItem } from "../schedule.ts";
 import { blobToBase64, getPhotoBlob, type GardenDB } from "../store.ts";
 import type { GardenData, Photo } from "../types.ts";
@@ -19,14 +23,16 @@ The app tracks:
 - Planters: containers of cells (seed trays, egg cartons, pots). Cells are named column number + row letter (1A is top-left; "1-2C" means a planting spanning cells 1C and 2C). Each planter's layout can be written as a markdown table with letters on rows and numbers on columns.
 - Plants (the seed library): one entry per seed packet, with the packet's sowing depth, germination days, spacing, watering and harvest info.
 - Plantings: a plant sown in particular cells, with a status (planned, sown, sprouted, growing, transplanted, harvesting, done, failed) and a sow date. Some sow dates are estimates.
-- A care log of events (watered, sprouted, thinned, pinched, fertilized, potted_up, transplanted, harvested, other), notes, photos, and to-do tasks.
+- Outdoor beds are planted in rows: a planting there has a count (e.g. 18 beets), and its plants are numbered 1…count along the row.
+- A care log of events (watered, sprouted, thinned, pinched, fertilized, potted_up, transplanted, harvested, observed, other), notes, photos, and to-do tasks. "observed" records a check on plants with a condition (healthy, pests, disease, nutrients, water, weeds, damage, missing, other), for the whole planting or specific numbered plants.
+- A garden map of the whole lot (house, front and back yards): boxes in feet with x east from the lot's west edge, y south from its north edge, w east–west, d north–south, h tall. Each has a kind (raised-bed, fence, fruit-tree, spigot, sprinkler, gantry, …); beds can link to a planter, whose rows are drawn on them.
 - A computed care schedule per planting: daily misting while seedlings are in a planter, the germination window from the packet, and packet-based milestones (thinning, first feeding, pinching, transplanting, harvest). Logging the matching event completes a milestone.
 
 Each user message starts with an <app_context> block describing today's date, the page the user is looking at, and current garden data. Treat it as the source of truth about the garden; it reflects the data at the moment the message was sent. Planting, planter and photo IDs appear there in brackets, like [k3x9p2]. Photos can be inspected with view_photo. When a photo is attached, look at it carefully — seedling color, legginess, damping off, mold, overcrowding — and say what you see.
 
 How to help:
 - Answer as a knowledgeable, practical gardener. Be specific to this garden's plants, cells, dates and packet instructions rather than generic. Keep answers short and skimmable; use short lists when listing steps.
-- When the user tells you something happened ("we watered the tray", "the parsley came up", "thinned the lettuce"), record it with log_care. When they share an observation or ask you to remember something, save it with add_note. When they want a reminder, use create_task. When a sow date or status is wrong, fix it with update_planting. When they plant, move or clear cells, or set up a new planter, rewrite its layout with update_planter_layout, then mark newly sown plantings with update_planting.
+- When the user tells you something happened ("we watered the tray", "the parsley came up", "thinned the lettuce"), record it with log_care. When they share an observation or ask you to remember something, save it with add_note. When they want a reminder, use create_task. When a sow date or status is wrong, fix it with update_planting. When they plant, move or clear cells, or set up a new planter, rewrite its layout with update_planter_layout, then mark newly sown plantings with update_planting. When they describe or change the layout of the yard (add a bed, move the fence, plan sprinklers), use edit_map.
 - Only record things the user said happened or asked you to record. Never invent care events. If you're unsure which planting they mean, ask.
 - After using a tool, briefly confirm what you recorded.
 - Wikipedia links and packet info are in the app; you don't need to repeat them unless asked.`;
@@ -45,10 +51,20 @@ function plantingSummary(p: PlantingView): string {
   const open = p.care.filter((c) => c.status !== "done" && c.status !== "upcoming").map(careLine);
   const next = p.care.find((c) => c.status === "upcoming");
   return (
-    `- [${p.id}] ${p.name}${p.variety ? ` '${p.variety}'` : ""} — ${where} — ${p.status}, ${sown}` +
+    `- [${p.id}] ${p.name}${p.variety ? ` '${p.variety}'` : ""}${p.count ? ` ×${p.count}` : ""} — ${where} — ${p.status}, ${sown}` +
     (open.length ? ` — needs: ${open.join("; ")}` : "") +
     (next ? ` — next: ${careLine(next)}` : "")
   );
+}
+
+/** "pests: 3, 4; healthy: 1, 2" from the latest check of each plant. */
+function plantCheckSummary(data: GardenData, p: PlantingView): string {
+  const by = new Map<string, number[]>();
+  plantStates(data, p.id, p.count ?? 0).forEach((s, i) => {
+    const key = s ? `${CONDITIONS[s.condition].label.toLowerCase()} (${s.date})` : "not checked";
+    by.set(key, [...(by.get(key) ?? []), i + 1]);
+  });
+  return [...by].map(([k, ns]) => `${k}: ${ns.length === p.count ? "all" : ns.join(", ")}`).join("; ");
 }
 
 export function plantingDetail(data: GardenData, p: PlantingView): string {
@@ -64,7 +80,8 @@ export function plantingDetail(data: GardenData, p: PlantingView): string {
     s.packetText ? `Packet text: ${s.packetText}` : "",
     s.tips.length ? `Tips: ${s.tips.join(" | ")}` : "",
     `Schedule:\n${p.care.map((c) => `  - ${careLine(c)}`).join("\n") || "  (none)"}`,
-    `Care log (newest first):\n${events.map((e) => `  - ${e.date} ${e.type}${e.note ? `: ${e.note}` : ""}${e.by ? ` (${e.by})` : ""}`).join("\n") || "  (empty)"}`,
+    p.count ? `Plants: ${p.count}, numbered 1–${p.count} along the row. Latest checks: ${plantCheckSummary(data, p)}` : "",
+    `Care log (newest first):\n${events.map((e) => `  - ${e.date} ${e.type}${e.condition ? ` ${e.condition}` : ""}${e.plants?.length ? ` (plants ${e.plants.join(", ")})` : ""}${e.note ? `: ${e.note}` : ""}${e.by ? ` (${e.by})` : ""}`).join("\n") || "  (empty)"}`,
     `Notes (newest first):\n${notes.map((n) => `  - ${n.createdAt.slice(0, 10)}${n.by ? ` ${n.by}` : ""}${n.byAssistant ? " (assistant)" : ""}: ${n.body}`).join("\n") || "  (none)"}`,
     `Open tasks:\n${tasks.map((t) => `  - ${t.dueDate}: ${t.title}`).join("\n") || "  (none)"}`,
     `Photos (newest first):\n${photos.map((ph) => `  - photo [${ph.id}], ${ph.takenAt}${ph.caption ? `: ${ph.caption}` : ""}`).join("\n") || "  (none)"}`,
@@ -73,7 +90,7 @@ export function plantingDetail(data: GardenData, p: PlantingView): string {
     .join("\n");
 }
 
-type PageRef = { kind: "dashboard" | "planting" | "tray" | "plant" | "plants" | "settings" | "calendar" | "other"; id?: string };
+type PageRef = { kind: "dashboard" | "planting" | "tray" | "plant" | "plants" | "settings" | "calendar" | "map" | "other"; id?: string };
 
 export function parsePath(pathname: string): PageRef {
   const m = pathname.match(/^\/(plantings|trays|plants)\/([^/]+)/);
@@ -82,11 +99,13 @@ export function parsePath(pathname: string): PageRef {
   if (pathname.startsWith("/plants")) return { kind: "plants" };
   if (pathname.startsWith("/settings")) return { kind: "settings" };
   if (pathname.startsWith("/calendar")) return { kind: "calendar" };
+  if (pathname.startsWith("/map")) return { kind: "map" };
   return { kind: "other" };
 }
 
 /** The per-turn context block plus at most one photo worth attaching. */
-export function buildContext(data: GardenData, userName: string | null, pathname: string, today: string): { text: string; photoId: string | null } {
+export function buildContext(data: GardenData, userName: string | null, location: string, today: string): { text: string; photoId: string | null } {
+  const [pathname, search = ""] = location.split("?");
   const page = parsePath(pathname);
   const all = plantingViews(data, today);
   const parts: string[] = [`Today: ${today} (${formatDate(today, { weekday: true })}), garden timezone ${data.garden.timezone}.`, `User: ${userName ?? "unknown"}.`];
@@ -131,6 +150,10 @@ export function buildContext(data: GardenData, userName: string | null, pathname
       );
       photoId = photosFor(data, { speciesId: s.id, kind: "packet_back" })[0]?.id ?? null;
     }
+  } else if (page.kind === "map") {
+    const sel = new URLSearchParams(search).get("e");
+    const e = sel ? data.mapEntities.find((m) => m.id === sel) : undefined;
+    parts.push(`Viewing: the garden map.${e ? ` Selected: ${mapEntitySummary(data, e)}` : ""}`, mapSummary(data));
   } else {
     parts.push(`Viewing: the ${page.kind === "other" ? "app" : page.kind} page.`);
     const tasks = tasksFor(data);
@@ -142,6 +165,31 @@ export function buildContext(data: GardenData, userName: string | null, pathname
   return { text: `<app_context>\n${parts.join("\n\n")}\n</app_context>`, photoId };
 }
 
+
+function mapEntitySummary(data: GardenData, e: MapEntity): string {
+  const r = (v: number) => +v.toFixed(2);
+  const links = [
+    e.links.trayId && `planter ${data.trays.find((t) => t.id === e.links.trayId)?.name ?? "?"} [${e.links.trayId}]`,
+    e.links.speciesId && `plant ${data.species.find((s) => s.id === e.links.speciesId)?.commonName ?? "?"}`,
+    e.links.entityId && `belongs to [${e.links.entityId}]`,
+  ].filter(Boolean);
+  const props = Object.entries(e.props).filter(([, v]) => v !== null && v !== "");
+  if (kindDef(e.kind).openings) {
+    const count = (t: string) => buildingOpenings(e).filter((o) => o.type === t).length;
+    props.push(["openings", `${count("door")} doors, ${count("window")} windows${count("garage") ? `, ${count("garage")} garage doors` : ""}`]);
+  }
+  if (e.links.trayId && data.trays.find((t) => t.id === e.links.trayId)?.layout === "rows") {
+    const b = Math.round(longSideBearing(e, (data.garden.site ?? DEFAULT_SITE).northDeg));
+    props.push(["rows run", `${b}° from true north (${compassPoint(b)}–${compassPoint(b + 180)})`]);
+  }
+  return `[${e.id}] ${e.kind} "${e.name}" x ${r(e.x)}, y ${r(e.y)}, ${r(e.w)}×${r(e.d)}×${r(e.h)} ft${e.rot ? `, turned ${r(e.rot)}°` : ""}${e.z ? `, raised ${r(e.z)}` : ""}${props.length ? `, ${props.map(([k, v]) => `${k}=${v}`).join(", ")}` : ""}${links.length ? `, ${links.join(", ")}` : ""}${e.notes ? ` — ${e.notes}` : ""}`;
+}
+
+function mapSummary(data: GardenData): string {
+  const site = data.garden.site ?? DEFAULT_SITE;
+  if (!data.mapEntities.length) return `Map: empty (lot ${site.width}×${site.depth} ft).`;
+  return `Map (lot ${site.width} ft east–west × ${site.depth} ft north–south, north ${site.northDeg}° clockwise from up):\n${data.mapEntities.map((e) => `- ${mapEntitySummary(data, e)}`).join("\n")}`;
+}
 
 // ---------- Tools ----------
 
@@ -156,6 +204,16 @@ export const TOOL_SPECS: ToolSpec[] = [
       type: { type: "string", enum: [...EVENT_TYPES] },
       date: { type: "string", description: "YYYY-MM-DD, or empty string for today." },
       note: { type: "string", description: "Optional short detail, or empty string." },
+      condition: {
+        type: "string",
+        enum: ["", ...CONDITION_KEYS],
+        description: "For type 'observed' (checking on plants): what was seen. Empty string otherwise.",
+      },
+      plants: {
+        type: "array",
+        items: { type: "integer" },
+        description: "Specific plant numbers (1-based) within a bed row planting that has a count, e.g. [3, 4]; empty for the whole planting.",
+      },
     },
   },
   {
@@ -185,19 +243,55 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "update_planter_layout",
     description:
-      "Create a planter or rewrite its layout. Pass the whole planter as markdown: a '# Name' heading, an optional one-line description, then a table whose header row is | | 1 | 2 | ... |, a |---| separator row, and one row per letter (| A | Basil | Thyme | ... |). Leave a cell blank when empty; repeat a name in adjacent cells of a row for one planting spanning them. Plants not in the seed library are added to it. New plantings start as 'planned'.",
+      "Create a planter or rewrite its layout. Pass the whole planter as markdown: a '# Name' heading, an optional one-line description, then a table whose header row is | | 1 | 2 | ... |, a |---| separator row, and one row per letter (| A | Basil | Thyme | ... |). Leave a cell blank when empty; repeat a name in adjacent cells of a row for one planting spanning them. For outdoor beds planted in rows, write the variety and plant count, e.g. 'Beet (Detroit Golden) x 18' (often one column per row). Plants not in the seed library are added to it. New plantings start as 'planned'.",
     properties: {
       planter_id: { type: "string", description: "Planter ID to rewrite, or empty string to create a new planter." },
       markdown: { type: "string" },
+    },
+  },
+  {
+    name: "edit_map",
+    description:
+      "Add, change or remove things on the garden map. Coordinates are feet: x east from the lot's west edge, y south from its north edge; w is east–west size, d north–south, h height (before any turn); rot turns it clockwise about its center. For 'update', fields left null stay as they are; for 'add', null sizes use the kind's defaults. Use 'link_planter_id' to show a planter's rows on a bed.",
+    properties: {
+      changes: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["op", "id", "kind", "name", "x", "y", "w", "d", "h", "rot", "link_planter_id", "notes"],
+          properties: {
+            op: { type: "string", enum: ["add", "update", "remove"] },
+            id: { type: "string", description: "Map item ID for update/remove; empty string for add." },
+            kind: { type: "string", enum: ["", ...KINDS.map((k) => k.kind)], description: "Kind for add; empty string otherwise." },
+            name: { type: "string", description: "New name, or empty string to keep / use the default." },
+            x: { type: ["number", "null"] },
+            y: { type: ["number", "null"] },
+            w: { type: ["number", "null"] },
+            d: { type: ["number", "null"] },
+            h: { type: ["number", "null"] },
+            rot: { type: ["number", "null"], description: "Turn about the item's center, degrees clockwise on the plan (0 = square to the lot)." },
+            link_planter_id: { type: "string", description: "Planter ID to link, 'none' to unlink, or empty string to leave as is." },
+            notes: { type: "string", description: "New notes, or empty string to leave as is." },
+          },
+        },
+      },
     },
   },
   { name: "get_planting", description: "Get full details (packet info, schedule, care log, notes, photo list) for any planting.", properties: { planting_id: { type: "string" } } },
   { name: "view_photo", description: "Look at one of the garden's photos by ID.", properties: { photo_id: { type: "string" } } },
 ];
 
-export const MUTATING = new Set(["log_care", "add_note", "create_task", "update_planting", "update_planter_layout"]);
+export const MUTATING = new Set(["log_care", "add_note", "create_task", "update_planting", "update_planter_layout", "edit_map"]);
 
-const LogCare = z.object({ planting_ids: z.array(z.string()).min(1), type: z.enum(EVENT_TYPES), date: z.string().default(""), note: z.string().default("") });
+const LogCare = z.object({
+  planting_ids: z.array(z.string()).min(1),
+  type: z.enum(EVENT_TYPES),
+  date: z.string().default(""),
+  note: z.string().default(""),
+  condition: z.enum(["", ...CONDITION_KEYS]).default(""),
+  plants: z.array(z.number().int()).default([]),
+});
 const AddNote = z.object({ planting_id: z.string().default(""), body: z.string().min(1) });
 const CreateTask = z.object({ title: z.string().min(1), due_date: z.string(), planting_id: z.string().default("") });
 const UpdatePlanting = z.object({
@@ -207,6 +301,27 @@ const UpdatePlanting = z.object({
   sow_date_estimated: z.enum(["yes", "no", "unchanged"]).default("unchanged"),
 });
 const UpdateLayout = z.object({ planter_id: z.string().default(""), markdown: z.string().min(1) });
+const num = z.number().finite().nullable().default(null);
+const EditMap = z.object({
+  changes: z
+    .array(
+      z.object({
+        op: z.enum(["add", "update", "remove"]),
+        id: z.string().default(""),
+        kind: z.string().default(""),
+        name: z.string().default(""),
+        x: num,
+        y: num,
+        w: num,
+        d: num,
+        h: num,
+        rot: num,
+        link_planter_id: z.string().default(""),
+        notes: z.string().default(""),
+      }),
+    )
+    .min(1),
+});
 const PlantingRef = z.object({ planting_id: z.string() });
 const PhotoRef = z.object({ photo_id: z.string() });
 
@@ -233,7 +348,17 @@ export async function runTool(name: string, raw: unknown, deps: AssistantDeps): 
         if (!r.success) return fail(`Invalid input: ${r.error.message}`);
         const date = r.data.date || deps.today;
         if (!isDate(date)) return fail("date must be YYYY-MM-DD");
-        const n = await deps.act((ctx) => logCare(ctx, { plantingIds: r.data.planting_ids, type: r.data.type, date, note: r.data.note, byAssistant: true }));
+        const n = await deps.act((ctx) =>
+          logCare(ctx, {
+            plantingIds: r.data.planting_ids,
+            type: r.data.type,
+            date,
+            note: r.data.note,
+            condition: r.data.condition || null,
+            plants: r.data.plants,
+            byAssistant: true,
+          }),
+        );
         if (n === 0) return fail("None of those planting IDs exist in this garden.");
         return { text: `Logged ${r.data.type} on ${date} for ${n} planting(s).`, summary: `Logged “${r.data.type.replace("_", " ")}” for ${n} planting${n === 1 ? "" : "s"}` };
       }
@@ -278,6 +403,37 @@ export async function runTool(name: string, raw: unknown, deps: AssistantDeps): 
           text: `Planter [${res.trayId}] saved: ${res.added} planned, ${res.moved} moved, ${res.kept} unchanged, ${res.removed} removed, ${res.detached} kept outside the planter because they have history.${res.newPlants.length ? ` Added to the seed library: ${res.newPlants.join(", ")}.` : ""} Plantings now: ${ids || "none"}`,
           summary: `Updated a planter layout (${res.added} new, ${res.moved} moved, ${res.removed + res.detached} removed)`,
         };
+      }
+      case "edit_map": {
+        const r = EditMap.safeParse(raw);
+        if (!r.success) return fail(`Invalid input: ${r.error.message}`);
+        const done: string[] = [];
+        for (const c of r.data.changes) {
+          const current = deps.latest();
+          const target = c.id ? current.mapEntities.find((m) => m.id === c.id) : undefined;
+          if (c.op !== "add" && !target) return fail(`Unknown map item ID ${c.id}.${done.length ? ` Already done: ${done.join("; ")}` : ""}`);
+          if (c.link_planter_id && c.link_planter_id !== "none" && !current.trays.some((t) => t.id === c.link_planter_id)) return fail(`Unknown planter ID ${c.link_planter_id}.`);
+          const patch: Partial<MapEntity> = {};
+          for (const k of ["x", "y", "w", "d", "h"] as const) if (c[k] != null) patch[k] = k === "x" || k === "y" ? c[k]! : Math.max(0, c[k]!);
+          if (c.rot != null) patch.rot = c.rot;
+          if (c.name) patch.name = c.name;
+          if (c.notes) patch.notes = c.notes;
+          if (c.link_planter_id) patch.links = { trayId: c.link_planter_id === "none" ? null : c.link_planter_id };
+          if (c.op === "remove") {
+            await deps.act((ctx) => deleteMapEntity(ctx, target!.id));
+            done.push(`removed ${target!.name}`);
+          } else if (c.op === "update") {
+            await deps.act((ctx) => updateMapEntity(ctx, target!.id, patch));
+            done.push(`updated ${patch.name ?? target!.name} [${target!.id}]`);
+          } else {
+            if (!c.kind) return fail("kind is required to add a map item.");
+            const def = kindDef(c.kind).defaults;
+            const at = { x: (c.x ?? 0) + (c.w ?? def.w) / 2, y: (c.y ?? 0) + (c.d ?? def.d) / 2 };
+            const id = await deps.act((ctx) => addMapEntity(ctx, c.kind, at, { ...patch, links: patch.links ?? {} }));
+            done.push(`added ${patch.name ?? def.name} [${id}]`);
+          }
+        }
+        return { text: `Map updated: ${done.join("; ")}.`, summary: `Updated the map (${done.length} change${done.length === 1 ? "" : "s"})` };
       }
       case "get_planting": {
         const r = PlantingRef.safeParse(raw);

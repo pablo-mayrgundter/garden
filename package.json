@@ -11,8 +11,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.ts",
-    "crop-images": "python3 scripts/crop_seed_images.py"
+    "test": "node --test test/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",

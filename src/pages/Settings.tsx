@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { GardenSettingsForm } from "@/components/forms";
 import { useGarden } from "@/lib/GardenContext";
 import { getAssistantSettings, OLLAMA_DEFAULTS, saveAssistantSettings } from "@/lib/settings";
-import { exportBackup, importBackup, type Backup } from "@/lib/store";
+import { exportBackup, importBackup, RECORD_STORES, type Backup } from "@/lib/store";
 
 type Msg = { ok?: string; error?: string } | undefined;
 
@@ -132,7 +132,7 @@ export function SettingsPage() {
 
   const wipe = async () => {
     if (!confirm("Delete this garden from this browser? Download a garden file first if you want to keep it.")) return;
-    const stores = ["meta", "photoBlobs", "chat", "species", "trays", "plantings", "events", "notes", "photos", "tasks"];
+    const stores = ["meta", "photoBlobs", "chat", ...RECORD_STORES];
     const tx = db.transaction(stores, "readwrite");
     await Promise.all([...stores.map((s) => tx.objectStore(s).clear()), tx.done]);
     location.reload();

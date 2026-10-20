@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { addNote, addPhoto, addTask, createPlanting, logCare, saveSpecies, updateGarden, updatePlanting } from "@/lib/actions";
 import { isDate } from "@/lib/dates";
 import { useGarden } from "@/lib/GardenContext";
-import { EVENT_TYPES, PLANTING_STATUSES, type EventType, type PlantingStatus } from "@/lib/model";
+import { CONDITION_KEYS, CONDITIONS, EVENT_TYPES, PLANTING_STATUSES, type Condition, type EventType, type PlantingStatus } from "@/lib/model";
 import type { Photo, Planting, Species } from "@/lib/types";
 
 const LABELS: Record<string, string> = {
@@ -15,6 +15,7 @@ const LABELS: Record<string, string> = {
   potted_up: "🪴 Potted up",
   transplanted: "🏡 Transplanted",
   harvested: "🧺 Harvested",
+  observed: "🔎 Checked",
   other: "📝 Other",
 };
 
@@ -57,7 +58,15 @@ export function QuickLog({ plantingIds, today }: { plantingIds: string[]; today:
   const { act } = useGarden();
   const [type, setType] = useState<EventType | null>(null);
   const { pending, onSubmit } = useSubmit(async (fd) => {
-    await act((ctx) => logCare(ctx, { plantingIds, type: type!, date: isDate(str(fd, "date")) ? str(fd, "date") : undefined, note: str(fd, "note") }));
+    await act((ctx) =>
+      logCare(ctx, {
+        plantingIds,
+        type: type!,
+        date: isDate(str(fd, "date")) ? str(fd, "date") : undefined,
+        note: str(fd, "note"),
+        condition: type === "observed" ? ((str(fd, "condition") || "other") as Condition) : null,
+      }),
+    );
     setType(null);
     return { ok: "Logged" };
   });
@@ -73,6 +82,16 @@ export function QuickLog({ plantingIds, today }: { plantingIds: string[]; today:
       {type && (
         <form onSubmit={onSubmit} className="form-grid">
           <label>Date<input type="date" name="date" defaultValue={today} max={today} /></label>
+          {type === "observed" && (
+            <label>
+              Condition
+              <select name="condition" defaultValue="healthy">
+                {CONDITION_KEYS.map((c) => (
+                  <option key={c} value={c}>{CONDITIONS[c].icon} {CONDITIONS[c].label}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <label style={{ gridColumn: "span 2" }}>Note (optional)<input name="note" placeholder="e.g. bottom-watered, half-strength fish emulsion" /></label>
           <div className="row" style={{ alignSelf: "end" }}>
             <button className="primary" disabled={pending}>Log {LABELS[type]}</button>
@@ -123,7 +142,7 @@ export function TaskForm({ plantingId, today }: { plantingId?: string; today: st
 }
 
 /** Downscale big phone photos before storing them. */
-async function shrink(file: File, maxSide = 1600): Promise<Blob> {
+export async function shrink(file: File, maxSide = 1600): Promise<Blob> {
   if (!file.type.startsWith("image/") || file.type === "image/gif") return file;
   try {
     const bitmap = await createImageBitmap(file);

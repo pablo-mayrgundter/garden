@@ -10,9 +10,25 @@ export const EVENT_TYPES = [
   "potted_up",
   "transplanted",
   "harvested",
+  "observed",
   "other",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
+
+/** What an "observed" event records about plants: their health, pests, or care they need. */
+export const CONDITIONS = {
+  healthy: { label: "Healthy", icon: "💚" },
+  pests: { label: "Pests", icon: "🐛" },
+  disease: { label: "Disease", icon: "🍂" },
+  nutrients: { label: "Nutrient deficiency", icon: "🟡" },
+  water: { label: "Water stress", icon: "🥀" },
+  weeds: { label: "Needs weeding", icon: "🌾" },
+  damage: { label: "Damage", icon: "🩹" },
+  missing: { label: "Missing / died", icon: "⚫" },
+  other: { label: "Other", icon: "🔎" },
+} as const;
+export type Condition = keyof typeof CONDITIONS;
+export const CONDITION_KEYS = Object.keys(CONDITIONS) as Condition[];
 
 export const PLANTING_STATUSES = [
   "planned",
