@@ -410,6 +410,9 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .frost-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 6px 0 10px; }
 .frost-grid > div { display: flex; flex-direction: column; gap: 2px; background: var(--surface-2); border-radius: 10px; padding: 8px 10px; }
 
+.pet-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+.pet-row input, .pet-row select { min-width: 0; }
+
 /* ---------- Map animation ---------- */
 /* Trees and shrubs sway from the bottom of the canopy; --sway grows with wind and rain. */
 .map-svg .canopy { transform-box: fill-box; transform-origin: 50% 100%; animation: rustle 3s ease-in-out infinite alternate; }
@@ -431,7 +434,12 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 .critters .leg-a, .critters .leg-b { transform-box: fill-box; transform-origin: 50% 0%; animation: stride 0.35s ease-in-out infinite alternate; }
 .critters .leg-b { animation-direction: alternate-reverse; }
 @keyframes stride { from { transform: skewX(-18deg); } to { transform: skewX(18deg); } }
-.critters .cat { cursor: default; }
+.critters .cat, .critters .dog, .critters .squirrel { cursor: default; }
+.critters .run .leg-a, .critters .run .leg-b { animation-duration: 0.13s; }
+.critters .wag { transform-box: fill-box; transform-origin: 100% 100%; animation: wag 0.45s ease-in-out infinite alternate; }
+@keyframes wag { from { transform: rotate(-10deg); } to { transform: rotate(14deg); } }
+.critters .woof { animation: woof 0.5s steps(1) infinite; }
+@keyframes woof { 0%, 100% { opacity: 1; } 50% { opacity: 0.15; } }
 @media (prefers-reduced-motion: reduce) {
   .map-svg .canopy, .critters *, .weather-fx * { animation: none !important; }
 }

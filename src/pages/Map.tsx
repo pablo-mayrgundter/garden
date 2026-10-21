@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router";
 import { TrayGrid } from "@/components/ui";
-import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, updateMapEntity } from "@/lib/actions";
+import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, updateGarden, updateMapEntity } from "@/lib/actions";
 import { coverPhotos, plantingViews, sortedSpecies, sortedTrays } from "@/lib/garden";
 import { useGarden } from "@/lib/GardenContext";
 import {
@@ -32,6 +32,9 @@ import { useForecast } from "@/lib/weather/useWeather";
 import { buildingOpenings, clampOpening, newOpening, placeOpening, wallLine, WALLS } from "@/lib/map/openings";
 import { CITIES, CITY_REGIONS, nearestCity, parseLatLng } from "@/lib/map/places";
 import { exportIfc, fileSlug } from "@/lib/map/ifc";
+import { DOG_COATS } from "@/lib/map/pets";
+import { newId } from "@/lib/store";
+import type { Pet } from "@/lib/types";
 import { downloadFile } from "@/lib/download";
 import { entityShadow, gardenLocation, shadowShape, sunFrom, sunGroundDirection, sunPosition, type SunPosition } from "@/lib/map/sun";
 
@@ -584,6 +587,7 @@ export function MapPage() {
                   </details>
                 </section>
               )}
+              {!empty && <PetsPanel />}
               {!empty && <ExportPanel />}
               <SitePanel site={site} />
             </>
@@ -1293,6 +1297,36 @@ function LocationPicker({ site, save }: { site: Site; save: (patch: Partial<Site
       {error && <p className="small error">{error}</p>}
       <p className="small muted">For the sun and shadows. Kept only in this browser and your garden files, to about 10 m.</p>
     </div>
+  );
+}
+
+/** The household's pets, who come out on the map. */
+function PetsPanel() {
+  const { data, act } = useGarden();
+  const pets = data.garden.pets ?? [];
+  const save = (next: Pet[]) => act((ctx) => updateGarden(ctx, { pets: next }));
+  const change = (id: string, patch: Partial<Pet>) => save(pets.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const house = data.mapEntities.some((e) => e.kind === "house");
+  return (
+    <section className="card">
+      <h3>Pets</h3>
+      {pets.map((p) => (
+        <div key={p.id} className="pet-row">
+          <span aria-hidden>🐕</span>
+          <TextField value={p.name} placeholder="Name" onCommit={(name) => change(p.id, { name: name.trim() })} />
+          <select aria-label={`${p.name || "Dog"}'s coat`} value={p.coat} onChange={(ev) => change(p.id, { coat: ev.target.value })}>
+            {Object.entries(DOG_COATS).map(([key, c]) => <option key={key} value={key}>{c.label}</option>)}
+          </select>
+          <button className="ghost small" onClick={() => save(pets.filter((x) => x.id !== p.id))} aria-label={`Remove ${p.name || "this dog"}`} title="Remove">✕</button>
+        </div>
+      ))}
+      <button className="small" onClick={() => save([...pets, { id: newId(), name: "", kind: "dog", coat: "red-heeler" }])}>+ Add a dog</button>
+      <p className="small muted">
+        {house
+          ? "A dog comes out the back door (the one nearest the patio) now and then, chases off cats and squirrels, sniffs around the yard, and on sunny days lies out on the patio."
+          : "Dogs live in the house: add one to the map and they'll come out its back door."}
+      </p>
+    </section>
   );
 }
 

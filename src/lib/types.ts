@@ -12,7 +12,18 @@ export type Garden = {
   gardeners: string[];
   /** The property the garden map draws (lot size, house, compass). Absent until the map is set up. */
   site?: Site;
+  /** The household's pets, who show up on the garden map. */
+  pets?: Pet[];
   createdAt: string;
+};
+
+/** A pet that lives here (for now, dogs): it comes out the back door on the map. */
+export type Pet = {
+  id: string;
+  name: string;
+  kind: "dog";
+  /** Key into DOG_COATS (src/lib/map/pets.ts). */
+  coat: string;
 };
 
 export type Species = {
