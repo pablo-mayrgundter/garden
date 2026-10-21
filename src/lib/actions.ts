@@ -7,7 +7,8 @@ import { formatCell, groupCells, parseCell, parseTrayMarkdown, trayToMarkdown, t
 import { kindDef } from "./map/kinds.ts";
 import type { MapEntity, Site } from "./map/model.ts";
 import { siteTemplate } from "./map/template.ts";
-import type { CareEvent, Garden, GardenData, Photo, Planting, RainDay, Species, Tray } from "./types.ts";
+import type { CareEvent, Garden, GardenData, IrrigationRun, Photo, Planting, RainDay, Species, Tray, ZoneSettings } from "./types.ts";
+import { runId } from "./irrigation.ts";
 
 export type ActionCtx = { db: GardenDB; data: GardenData; by: string | null; today: string };
 
@@ -531,4 +532,29 @@ export async function recordRain(ctx: ActionCtx, days: RainDay[]) {
 export async function setGaugeRain(ctx: ActionCtx, date: string, inches: number | null) {
   if (inches == null) return deleteRecord(ctx.db, "rain", date);
   await putRecords(ctx.db, "rain", [{ id: date, date, inches: Math.max(0, Math.round(inches * 100) / 100), source: "gauge", by: ctx.by, updatedAt: now() }]);
+}
+
+// ---------- Irrigation ----------
+
+/** Names a zone or sets its timer. A changed timer takes effect from today: earlier runs stay on record as they were. */
+export async function setZone(ctx: ActionCtx, zone: string, patch: Partial<Omit<ZoneSettings, "zone">>) {
+  const zones = ctx.data.garden.zones ?? [];
+  const current = zones.find((z) => z.zone === zone) ?? { zone, name: null, timer: null };
+  const next: ZoneSettings = { ...current, ...patch, zone };
+  if (patch.timer) next.timer = { ...patch.timer, since: ctx.today };
+  await updateGarden(ctx, { zones: [...zones.filter((z) => z.zone !== zone), next] });
+}
+
+export async function recordIrrigation(ctx: ActionCtx, runs: IrrigationRun[]) {
+  if (runs.length) await putRecords(ctx.db, "irrigation", runs);
+}
+
+/**
+ * Says a zone ran on a day ("manual"), or that its timer's run didn't happen
+ * ("skipped"); null clears the day's record. With `head`, it's just that one
+ * drip line or sprinkler.
+ */
+export async function setZoneRun(ctx: ActionCtx, zone: string, date: string, source: "manual" | "skipped" | null, head: string | null = null) {
+  if (source == null) return deleteRecord(ctx.db, "irrigation", runId(zone, date, head));
+  await putRecords(ctx.db, "irrigation", [{ id: runId(zone, date, head), zone, date, head, source, by: ctx.by, updatedAt: now() }]);
 }

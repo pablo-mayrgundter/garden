@@ -2,7 +2,8 @@
 // built from the page the user is on, and the garden tools with their handlers.
 
 import { z } from "zod";
-import { addMapEntity, addNote, addTask, applyTrayLayout, deleteMapEntity, logCare, trayMarkdown, updateMapEntity, updatePlanting, type ActionCtx } from "../actions.ts";
+import { addMapEntity, addNote, addTask, applyTrayLayout, deleteMapEntity, logCare, setZoneRun, trayMarkdown, updateMapEntity, updatePlanting, type ActionCtx } from "../actions.ts";
+import { describeTimer, irrigationZones, lineLabel, runId, zoneLabel } from "../irrigation.ts";
 import { compassPoint, longSideBearing } from "../map/geometry.ts";
 import { KINDS, kindDef } from "../map/kinds.ts";
 import { buildingOpenings } from "../map/openings.ts";
@@ -27,13 +28,14 @@ The app tracks:
 - Outdoor beds are planted in rows: a planting there has a count (e.g. 18 beets), and its plants are numbered 1…count along the row.
 - A care log of events (watered, sprouted, thinned, pinched, fertilized, potted_up, transplanted, harvested, observed, other), notes, photos, and to-do tasks. "observed" records a check on plants with a condition (healthy, pests, disease, nutrients, water, weeds, damage, missing, other), for the whole planting or specific numbered plants.
 - A garden map of the whole lot (house, front and back yards): boxes in feet with x east from the lot's west edge, y south from its north edge, w east–west, d north–south, h tall. Each has a kind (raised-bed, fence, fruit-tree, spigot, sprinkler, gantry, …); beds can link to a planter, whose rows are drawn on them.
+- Irrigation zones: sprinklers, drip lines and valves on the map each belong to a zone (their "zone" setting). A zone waters the beds most of which its sprinklers' spray radius covers, that its drip lines run through, or that its drip lines and valves are linked to. A zone can have a timer (days and start time); timer runs are recorded automatically, and people can say it ran. Each run counts as watering for every planting in the zone's beds, the same way rain does.
 - A computed care schedule per planting: daily misting while seedlings are in a planter, the germination window from the packet, and packet-based milestones (thinning, first feeding, pinching, transplanting, harvest). Logging the matching event completes a milestone.
 
 Each user message starts with an <app_context> block describing today's date, the page the user is looking at, and current garden data. Treat it as the source of truth about the garden; it reflects the data at the moment the message was sent. Planting, planter and photo IDs appear there in brackets, like [k3x9p2]. Photos can be inspected with view_photo. When a photo is attached, look at it carefully — seedling color, legginess, damping off, mold, overcrowding — and say what you see.
 
 How to help:
 - Answer as a knowledgeable, practical gardener. Be specific to this garden's plants, cells, dates and packet instructions rather than generic. Keep answers short and skimmable; use short lists when listing steps.
-- When the user tells you something happened ("we watered the tray", "the parsley came up", "thinned the lettuce"), record it with log_care. When they share an observation or ask you to remember something, save it with add_note. When they want a reminder, use create_task. When a sow date or status is wrong, fix it with update_planting. When they plant, move or clear cells, or set up a new planter, rewrite its layout with update_planter_layout, then mark newly sown plantings with update_planting. When they describe or change the layout of the yard (add a bed, move the fence, plan sprinklers), use edit_map.
+- When the user tells you something happened ("we watered the tray", "the parsley came up", "thinned the lettuce"), record it with log_care. When they share an observation or ask you to remember something, save it with add_note. When they want a reminder, use create_task. When a sow date or status is wrong, fix it with update_planting. When they plant, move or clear cells, or set up a new planter, rewrite its layout with update_planter_layout, then mark newly sown plantings with update_planting. When they describe or change the layout of the yard (add a bed, move the fence, plan sprinklers), use edit_map. When they say the sprinklers or drip system ran (or didn't), record it once for the zone with irrigation_ran rather than logging a watering for each planting; if the beds' irrigation isn't on the map yet, offer to add it with edit_map (sprinklers with a zone and a spray radius that covers the beds).
 - Only record things the user said happened or asked you to record. Never invent care events. If you're unsure which planting they mean, ask.
 - After using a tool, briefly confirm what you recorded.
 - Wikipedia links and packet info are in the app; you don't need to repeat them unless asked.`;
@@ -169,6 +171,22 @@ export function buildContext(data: GardenData, userName: string | null, location
         .map((r) => `${r.date} ${r.inches.toFixed(2)} in${r.source === "expected" ? ` (expected, ${r.chance ?? "?"}% chance)` : r.source === "gauge" ? " (rain gauge)" : ""}`)
         .join("; ")}`,
     );
+  const zones = irrigationZones(data);
+  if (zones.length) {
+    const runs = (data.irrigation ?? []).filter((r) => r.date >= addDays(today, -10) && r.date <= today).sort((a, b) => a.date.localeCompare(b.date));
+    parts.push(
+      `Irrigation zones (a run counts as watering for every planting in the zone's beds):\n${zones
+        .map((z) => {
+          const beds = z.beds.map((b) => `${b.name}${b.links.trayId ? ` (planter [${b.links.trayId}])` : ""}`).join(", ");
+          const lines = z.lines.map((l) => `[${l.head.id}] ${l.head.kind} "${l.head.name}" → ${l.beds.map((b) => b.name).join(", ") || "no beds"}`).join("; ");
+          const ran = runs
+            .filter((r) => r.zone === z.zone)
+            .map((r) => `${r.date} ${r.head ? `${z.lines.find((l) => l.head.id === r.head)?.head.name ?? "a line"} only, ` : ""}${r.source === "timer" ? "timer" : r.source === "skipped" ? "skipped" : "logged"}`);
+          return `- zone "${z.zone}": ${zoneLabel(z)} — waters ${beds || "no beds yet"}; lines: ${lines}; ${describeTimer(z.settings.timer)}${ran.length ? `; last 10 days: ${ran.join(", ")}` : "; no runs in the last 10 days"}`;
+        })
+        .join("\n")}`,
+    );
+  }
   parts.push(`All plantings:\n${all.map(plantingSummary).join("\n")}`);
   return { text: `<app_context>\n${parts.join("\n\n")}\n</app_context>`, photoId };
 }
@@ -267,7 +285,7 @@ export const TOOL_SPECS: ToolSpec[] = [
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["op", "id", "kind", "name", "x", "y", "w", "d", "h", "rot", "link_planter_id", "notes"],
+          required: ["op", "id", "kind", "name", "x", "y", "w", "d", "h", "rot", "link_planter_id", "zone", "radius", "notes"],
           properties: {
             op: { type: "string", enum: ["add", "update", "remove"] },
             id: { type: "string", description: "Map item ID for update/remove; empty string for add." },
@@ -280,17 +298,30 @@ export const TOOL_SPECS: ToolSpec[] = [
             h: { type: ["number", "null"] },
             rot: { type: ["number", "null"], description: "Turn about the item's center, degrees clockwise on the plan (0 = square to the lot)." },
             link_planter_id: { type: "string", description: "Planter ID to link, 'none' to unlink, or empty string to leave as is." },
+            zone: { type: "string", description: "Irrigation zone for a sprinkler, drip line or valve (e.g. '1'), or empty string to leave as is / use the default '1'." },
+            radius: { type: ["number", "null"], description: "A sprinkler's spray radius in feet; null to leave as is / use the default 8." },
             notes: { type: "string", description: "New notes, or empty string to leave as is." },
           },
         },
       },
     },
   },
+  {
+    name: "irrigation_ran",
+    description:
+      "Record that an irrigation zone ran (sprinklers or drip) on a day, which counts as watering for every planting in the zone's beds, or that just one of its lines did (it waters only that line's beds); or, with ran 'no', that it didn't (a timer run that was skipped, or a run logged by mistake).",
+    properties: {
+      zone: { type: "string", description: "The zone, as given in the irrigation zones list (e.g. '1')." },
+      line_id: { type: "string", description: "Map item ID of the one drip line or sprinkler that ran, or empty string for the whole zone." },
+      date: { type: "string", description: "YYYY-MM-DD, or empty string for today." },
+      ran: { type: "string", enum: ["yes", "no"] },
+    },
+  },
   { name: "get_planting", description: "Get full details (packet info, schedule, care log, notes, photo list) for any planting.", properties: { planting_id: { type: "string" } } },
   { name: "view_photo", description: "Look at one of the garden's photos by ID.", properties: { photo_id: { type: "string" } } },
 ];
 
-export const MUTATING = new Set(["log_care", "add_note", "create_task", "update_planting", "update_planter_layout", "edit_map"]);
+export const MUTATING = new Set(["log_care", "add_note", "create_task", "update_planting", "update_planter_layout", "edit_map", "irrigation_ran"]);
 
 const LogCare = z.object({
   planting_ids: z.array(z.string()).min(1),
@@ -325,11 +356,14 @@ const EditMap = z.object({
         h: num,
         rot: num,
         link_planter_id: z.string().default(""),
+        zone: z.string().default(""),
+        radius: num,
         notes: z.string().default(""),
       }),
     )
     .min(1),
 });
+const IrrigationRan = z.object({ zone: z.string().min(1), line_id: z.string().default(""), date: z.string().default(""), ran: z.enum(["yes", "no"]).default("yes") });
 const PlantingRef = z.object({ planting_id: z.string() });
 const PhotoRef = z.object({ photo_id: z.string() });
 
@@ -427,6 +461,10 @@ export async function runTool(name: string, raw: unknown, deps: AssistantDeps): 
           if (c.name) patch.name = c.name;
           if (c.notes) patch.notes = c.notes;
           if (c.link_planter_id) patch.links = { trayId: c.link_planter_id === "none" ? null : c.link_planter_id };
+          const props: MapEntity["props"] = {};
+          if (c.zone.trim()) props.zone = c.zone.trim();
+          if (c.radius != null) props.radius = Math.max(0, c.radius);
+          if (Object.keys(props).length) patch.props = { ...(target?.props ?? kindDef(c.kind).defaults.props ?? {}), ...props };
           if (c.op === "remove") {
             await deps.act((ctx) => deleteMapEntity(ctx, target!.id));
             done.push(`removed ${target!.name}`);
@@ -442,6 +480,28 @@ export async function runTool(name: string, raw: unknown, deps: AssistantDeps): 
           }
         }
         return { text: `Map updated: ${done.join("; ")}.`, summary: `Updated the map (${done.length} change${done.length === 1 ? "" : "s"})` };
+      }
+      case "irrigation_ran": {
+        const r = IrrigationRan.safeParse(raw);
+        if (!r.success) return fail(`Invalid input: ${r.error.message}`);
+        const date = r.data.date || deps.today;
+        if (!isDate(date)) return fail("date must be YYYY-MM-DD");
+        const zone = irrigationZones(data).find((z) => z.zone === r.data.zone);
+        if (!zone) return fail(`There's no zone "${r.data.zone}" on the map. Add sprinklers or drip lines on that zone with edit_map first.`);
+        const line = r.data.line_id ? zone.lines.find((l) => l.head.id === r.data.line_id) : undefined;
+        if (r.data.line_id && !line) return fail(`[${r.data.line_id}] isn't a drip line or sprinkler on zone "${zone.zone}".`);
+        const head = line?.head.id ?? null;
+        const label = line ? lineLabel(zone, line) : zoneLabel(zone);
+        const beds = line ? line.beds : zone.beds;
+        if (r.data.ran === "yes") {
+          await deps.act((ctx) => setZoneRun(ctx, zone.zone, date, "manual", head));
+          const trays = new Set(beds.map((b) => b.links.trayId));
+          const n = data.plantings.filter((p) => p.trayId && trays.has(p.trayId)).length;
+          return { text: `Recorded that ${label} ran on ${date}; that counts as watering for the ${n} planting(s) in ${beds.map((b) => b.name).join(", ") || "its beds"}.`, summary: `Recorded a ${label} run` };
+        }
+        const existing = (data.irrigation ?? []).find((x) => x.id === runId(zone.zone, date, head));
+        await deps.act((ctx) => setZoneRun(ctx, zone.zone, date, !head && (existing?.source === "timer" || zone.settings.timer) ? "skipped" : null, head));
+        return { text: `Recorded that ${label} didn't run on ${date}.`, summary: `Marked ${label} as not run` };
       }
       case "get_planting": {
         const r = PlantingRef.safeParse(raw);

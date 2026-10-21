@@ -14,7 +14,44 @@ export type Garden = {
   site?: Site;
   /** The household's pets, who show up on the garden map. */
   pets?: Pet[];
+  /** Irrigation zones' names and timers, by zone (the zones themselves come from the sprinklers, drip lines and valves on the map). */
+  zones?: ZoneSettings[];
   createdAt: string;
+};
+
+/** An irrigation zone's settings. See src/lib/irrigation.ts. */
+export type ZoneSettings = {
+  /** The zone, as set on its sprinklers, drip lines and valves ("1", "Back beds"). */
+  zone: string;
+  /** What to call it, when not "Zone 1". */
+  name: string | null;
+  /** The controller's schedule, when it runs on a timer; null when it's run by hand. */
+  timer: ZoneTimer | null;
+};
+
+export type ZoneTimer = {
+  /** Days of the week it runs, 0 = Sunday … 6 = Saturday. */
+  days: number[];
+  /** Start time, HH:MM on a 24-hour clock, in the garden's time zone. */
+  at: string;
+  /** The day the timer was set; runs are recorded from then on. */
+  since: string;
+  /** Turned off for now (winter, a wet spell) without losing the schedule. */
+  paused: boolean;
+};
+
+/** One run of an irrigation zone (or just one of its lines) on one day. */
+export type IrrigationRun = {
+  /** `${zone}:${date}` for the whole zone, `${zone}:${date}:${head}` for one line: one record each per day. */
+  id: string;
+  zone: string;
+  date: string;
+  /** The one drip line or sprinkler (map item ID) that ran, when it wasn't the whole zone. */
+  head?: string | null;
+  /** "timer": recorded from the zone's timer; "manual": someone said it ran; "skipped": the timer's run that day didn't happen. */
+  source: "timer" | "manual" | "skipped";
+  by?: string | null;
+  updatedAt: string;
 };
 
 /** A pet that lives here (for now, dogs): it comes out the back door on the map. */
@@ -149,6 +186,8 @@ export type GardenData = {
   mapEntities: MapEntity[];
   /** Rain that fell in the garden, one record per day (see weather/rain.ts). */
   rain: RainDay[];
+  /** When each irrigation zone ran (see irrigation.ts). */
+  irrigation: IrrigationRun[];
 };
 
 export type ChatRecord = {

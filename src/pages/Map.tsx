@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router";
-import { TrayGrid } from "@/components/ui";
-import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, updateGarden, updateMapEntity } from "@/lib/actions";
+import { ActionButton, TrayGrid } from "@/components/ui";
+import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, setZone, setZoneRun, updateGarden, updateMapEntity } from "@/lib/actions";
+import { bedsWatered, describeTimer, IRRIGATION_KINDS, irrigationZones, lastRun, ranWhen, runId, zoneLabel, zoneOf } from "@/lib/irrigation";
 import { coverPhotos, plantingViews, sortedSpecies, sortedTrays } from "@/lib/garden";
 import { useGarden } from "@/lib/GardenContext";
 import {
@@ -9,6 +10,8 @@ import {
   entityProjector,
   footprintBounds,
   freeSpot,
+  lineEnds,
+  lineFromEnds,
   longSideBearing,
   makeProjector,
   normDeg,
@@ -21,6 +24,7 @@ import {
   unprojectDelta,
   type Projector,
   type Rot,
+  type Vec2,
   type ViewMode,
 } from "@/lib/map/geometry";
 import { KINDS, kindDef, type FieldDef } from "@/lib/map/kinds";
@@ -34,7 +38,7 @@ import { CITIES, CITY_REGIONS, nearestCity, parseLatLng } from "@/lib/map/places
 import { exportIfc, fileSlug } from "@/lib/map/ifc";
 import { DOG_COATS } from "@/lib/map/pets";
 import { newId } from "@/lib/store";
-import type { Pet } from "@/lib/types";
+import type { Pet, ZoneTimer } from "@/lib/types";
 import { downloadFile } from "@/lib/download";
 import { entityShadow, gardenLocation, shadowShape, sunFrom, sunGroundDirection, sunPosition, type SunPosition } from "@/lib/map/sun";
 
@@ -43,6 +47,7 @@ type Draft = { id: string; x: number; y: number; w: number; d: number; rot?: num
 type Drag =
   | { type: "pan"; sx: number; sy: number; view: View; moved: boolean; selectId: string | null }
   | { type: "move" | "resize" | "rotate"; sx: number; sy: number; entity: MapEntity; moved: boolean }
+  | { type: "end"; sx: number; sy: number; entity: MapEntity; end: 0 | 1; moved: boolean }
   | { type: "compass"; sx: number; sy: number; moved: boolean }
   | { type: "opening"; sx: number; sy: number; entity: MapEntity; openingId: string; moved: boolean };
 
@@ -169,8 +174,18 @@ export function MapPage() {
 
   const entities = useMemo(() => {
     const list = data.mapEntities.map((e) => (draft && draft.id === e.id ? { ...e, ...draft } : e)).filter((e) => !hidden.has(kindDef(e.kind).layer));
-    const flat = list.filter((e) => kindDef(e.kind).flat).sort((a, b) => LAYERS[kindDef(a.kind).layer].order - LAYERS[kindDef(b.kind).layer].order || b.w * b.d - a.w * a.d);
-    const solid = paintOrder(pj, list.filter((e) => !kindDef(e.kind).flat));
+    // A drip line over a bed is drawn on the bed (right after it), not under it on the ground.
+    const dripBeds = new Map(list.filter((e) => e.kind === "drip-line").map((e) => [e.id, bedsWatered(e, list)]));
+    const overBed = (e: MapEntity) => (dripBeds.get(e.id)?.length ?? 0) > 0;
+    const flat = list.filter((e) => kindDef(e.kind).flat && !overBed(e)).sort((a, b) => LAYERS[kindDef(a.kind).layer].order - LAYERS[kindDef(b.kind).layer].order || b.w * b.d - a.w * a.d);
+    const ordered = paintOrder(pj, list.filter((e) => !kindDef(e.kind).flat));
+    const after = new Map<string, MapEntity[]>();
+    for (const e of list.filter(overBed)) {
+      const beds = new Set(dripBeds.get(e.id)!.map((b) => b.id));
+      const last = ordered.findLast((x) => beds.has(x.id));
+      if (last) after.set(last.id, [...(after.get(last.id) ?? []), e]);
+    }
+    const solid = ordered.flatMap((e) => [e, ...(after.get(e.id) ?? [])]);
     return { flat, solid, all: [...flat, ...solid] };
   }, [data.mapEntities, draft, hidden, pj]);
 
@@ -215,6 +230,7 @@ export function MapPage() {
   const shadowPaths = useMemo(() => {
     if (!shadows || sun.altitude <= 0 || !shadowOpacity) return "";
     return entities.solid
+      .filter((e) => !kindDef(e.kind).flat)
       .map((e) => entityShadow(e, shadowShape(e.kind, kindDef(e.kind).flat), sun, site.northDeg))
       .filter((poly): poly is [number, number][] => !!poly && poly.length > 2)
       .map((poly) => poly.map(([x, y], i) => `${i ? "L" : "M"}${pj.p(x, y, 0.03).map((v) => v.toFixed(3)).join(" ")}`).join(" ") + " Z")
@@ -256,6 +272,8 @@ export function MapPage() {
       startDrag(ev, { type: "compass", sx: pt.x, sy: pt.y, moved: false });
     } else if ((handle === "resize" || handle === "rotate") && selected) {
       startDrag(ev, { type: handle, sx: pt.x, sy: pt.y, entity: selected, moved: false });
+    } else if ((handle === "end-0" || handle === "end-1") && selected) {
+      startDrag(ev, { type: "end", sx: pt.x, sy: pt.y, entity: selected, end: handle === "end-0" ? 0 : 1, moved: false });
     } else if (id && id === selectedId && selected) {
       startDrag(ev, { type: "move", sx: pt.x, sy: pt.y, entity: selected, moved: false });
     } else {
@@ -316,7 +334,14 @@ export function MapPage() {
     const [wx, wy] = unprojectDelta(pj, dx / view.zoom, dy / view.zoom);
     const e = d.entity;
     const g = site.gridFt;
-    if (d.type === "move") {
+    if (d.type === "end") {
+      // One end follows the pointer (on the grid); the other stays put.
+      const ends = lineEnds(e);
+      const moving = ends[d.end];
+      const target: Vec2 = [snap(moving[0] + wx, g), snap(moving[1] + wy, g)];
+      const fixed = ends[1 - d.end];
+      setDraft({ id: e.id, ...(d.end === 1 ? lineFromEnds(fixed, target, Math.min(e.w, e.d)) : lineFromEnds(target, fixed, Math.min(e.w, e.d))) });
+    } else if (d.type === "move") {
       setDraft({ id: e.id, x: snap(e.x + wx, g), y: snap(e.y + wy, g), w: e.w, d: e.d, rot: e.rot });
     } else if (d.type === "resize") {
       const next = resizeFromCorner(e, wx, wy, (v) => snap(v, g), Math.max(g, 0.25));
@@ -540,6 +565,7 @@ export function MapPage() {
             <EntityPanel key={selected.id} e={selected} onClose={() => select(null)} onSelect={select} openingSel={openingSel} setOpeningSel={setOpeningSel} />
           ) : (
             <>
+              {!empty && <WateringPanel onSelect={select} onAdd={add} />}
               <section className="card">
                 <h3>Add to the map</h3>
                 <p className="small muted">Added in the middle of the view; drag it into place.</p>
@@ -613,25 +639,45 @@ function Selection({ pj: base, e, zoom, resizable, openingSel }: { pj: Projector
   const ring = (z: number) => [pj.p(e.x, e.y, z), pj.p(e.x + e.w, e.y, z), pj.p(e.x + e.w, e.y + e.d, z), pj.p(e.x, e.y + e.d, z)].map((q, i) => `${i ? "L" : "M"}${q.join(" ")}`).join(" ") + " Z";
   const [hx, hy] = pj.p(e.x + e.w, e.y + e.d, e.z);
   // The turn handle sits off the end of the long side.
-  const off = 22 / zoom;
+  const off = 24 / zoom;
   const alongX = e.w >= e.d;
   const [ex, ey] = pj.p(alongX ? e.x + e.w : e.x + e.w / 2, alongX ? e.y + e.d / 2 : e.y + e.d, e.z);
   const [tx, ty] = pj.p(alongX ? e.x + e.w + off : e.x + e.w / 2, alongX ? e.y + e.d / 2 : e.y + e.d + off, e.z);
+  const line = kindDef(e.kind).line;
+  // Big, high-contrast knobs: a white halo under an accent ring, so they show on any ground.
+  const knob = (x: number, y: number, r: number, fill: string) => (
+    <>
+      <circle cx={x} cy={y} r={r + 3 / zoom} fill="#fff" fillOpacity={0.9} />
+      <circle cx={x} cy={y} r={r} fill={fill} stroke={PAL.accent} strokeWidth={3} vectorEffect="non-scaling-stroke" />
+    </>
+  );
   return (
     <g pointerEvents="none">
       <path d={ring(e.z)} fill={PAL.accent} fillOpacity={0.12} stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeDasharray="6 3" />
       {pj.mode === "iso" && e.h > 0.5 && <path d={ring(e.z + e.h)} fill="none" stroke={PAL.accent} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
-      {resizable && (
+      {line &&
+        lineEnds(e).map(([x, y], i) => {
+          // The ends are on the lot already turned, so through the plain projector.
+          const [sx, sy] = base.p(x, y, e.z);
+          return (
+            <g key={i} data-handle={`end-${i}`} pointerEvents="all" style={{ cursor: "move" }}>
+              <title>Drag this end</title>
+              {knob(sx, sy, 10 / zoom, i ? PAL.accent : "#fff")}
+            </g>
+          );
+        })}
+      {resizable && !line && (
         <>
-          <line x1={ex} y1={ey} x2={tx} y2={ty} stroke={PAL.accent} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          <line x1={ex} y1={ey} x2={tx} y2={ty} stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" />
           <g data-handle="rotate" pointerEvents="all" style={{ cursor: "grab" }}>
             <title>Drag to turn ([ and ] keys too)</title>
-            <circle cx={tx} cy={ty} r={8 / zoom} fill={PAL.accent} stroke="#fff" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-            <text x={tx} y={ty} fontSize={11 / zoom} fill="#fff" textAnchor="middle" dominantBaseline="central">⟳</text>
+            {knob(tx, ty, 10 / zoom, PAL.accent)}
+            <text x={tx} y={ty} fontSize={13 / zoom} fill="#fff" textAnchor="middle" dominantBaseline="central">⟳</text>
           </g>
-          <circle data-handle="resize" cx={hx} cy={hy} r={7 / zoom} fill="#fff" stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" pointerEvents="all" style={{ cursor: "nwse-resize" }}>
+          <g data-handle="resize" pointerEvents="all" style={{ cursor: "nwse-resize" }}>
             <title>Drag to resize</title>
-          </circle>
+            {knob(hx, hy, 9 / zoom, "#fff")}
+          </g>
         </>
       )}
       {kindDef(e.kind).openings &&
@@ -1113,6 +1159,8 @@ function EntityPanel({
 
       {def.openings && <OpeningsEditor e={e} selected={openingSel} onSelect={setOpeningSel} />}
 
+      {IRRIGATION_KINDS.has(e.kind) && <ZonePanel e={e} />}
+
       {def.links?.includes("tray") && (
         <section className="card">
           <h3>Planter</h3>
@@ -1172,6 +1220,80 @@ function EntityPanel({
         </div>
       </section>
     </>
+  );
+}
+
+const DAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** The zone a sprinkler, drip line or valve is on: the beds it waters, its name and timer, and a way to say it ran. */
+function ZonePanel({ e }: { e: MapEntity }) {
+  const { data, today, act } = useGarden();
+  const zone = irrigationZones(data).find((z) => z.zone === zoneOf(e));
+  if (!zone) return null;
+  const timer = zone.settings.timer;
+  const draft: ZoneTimer = timer ?? { days: [], at: "06:00", since: today, paused: false };
+  const setTimer = (patch: Partial<ZoneTimer>) => act((ctx) => setZone(ctx, zone.zone, { timer: { ...draft, ...patch } }));
+  const last = lastRun(data.irrigation ?? [], zone.zone, today);
+  const hint =
+    e.kind === "sprinkler"
+      ? "move it so its spray covers most of a bed, or widen its spray radius."
+      : e.kind === "drip-line"
+        ? "run it through a bed, or pick the bed under Belongs to."
+        : `pick a bed under Belongs to, or add sprinklers or drip lines on zone ${zone.zone}.`;
+  return (
+    <section className="card">
+      <h3>💦 {zoneLabel(zone)}</h3>
+      <p className="small">
+        {zone.beds.length ? (
+          <>Waters {zone.beds.map((b) => b.name).join(", ")}. A run counts as watering for every planting in them.</>
+        ) : (
+          <span className="muted">Doesn&rsquo;t water any beds yet: {hint}</span>
+        )}
+      </p>
+      <label className="field">
+        <span>Zone name</span>
+        <TextField value={zone.settings.name ?? ""} placeholder={`Zone ${zone.zone}`} onCommit={(name) => act((ctx) => setZone(ctx, zone.zone, { name: name.trim() || null }))} />
+      </label>
+      <div className="field">
+        <span>Timer runs on</span>
+        <div className="zone-days">
+          {DAY_LETTERS.map((d, i) => (
+            <button
+              key={i}
+              className={`small ${draft.days.includes(i) ? "on" : ""}`}
+              aria-pressed={draft.days.includes(i)}
+              aria-label={DAY_NAMES[i]}
+              title={DAY_NAMES[i]}
+              onClick={() => setTimer({ days: draft.days.includes(i) ? draft.days.filter((x) => x !== i) : [...draft.days, i].sort() })}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="row">
+        <label className="field">
+          <span>Starts at</span>
+          <input type="time" value={draft.at} onChange={(ev) => ev.target.value && setTimer({ at: ev.target.value })} />
+        </label>
+        {timer && timer.days.length > 0 && (
+          <label className="check">
+            <input type="checkbox" checked={timer.paused} onChange={(ev) => setTimer({ paused: ev.target.checked })} /> Paused
+          </label>
+        )}
+      </div>
+      <p className="small muted">
+        {describeTimer(timer)}
+        {last ? ` · last ran ${ranWhen(last.date, today)}${last.source === "timer" ? " (timer)" : ""}` : ""}. Timer runs are recorded on their own. Ran it by hand? Tap Ran today, here or on the Today page.
+      </p>
+      <div className="row">
+        <ActionButton className="small" onClick={() => act((ctx) => setZoneRun(ctx, zone.zone, today, "manual"))}>💦 Whole zone ran today</ActionButton>
+        {e.kind !== "valve" && (zone.lines.find((l) => l.head.id === e.id)?.beds.length ?? 0) > 0 && (
+          <ActionButton className="small" onClick={() => act((ctx) => setZoneRun(ctx, zone.zone, today, "manual", e.id))}>💧 Just this one ran</ActionButton>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1297,6 +1419,87 @@ function LocationPicker({ site, save }: { site: Site; save: (patch: Partial<Site
       {error && <p className="small error">{error}</p>}
       <p className="small muted">For the sun and shadows. Kept only in this browser and your garden files, to about 10 m.</p>
     </div>
+  );
+}
+
+/**
+ * The watering system: each zone with its drip lines and sprinklers. Run a
+ * whole zone at once, or say just one line ran; either way it counts as
+ * watering for every planting in the beds it reaches.
+ */
+function WateringPanel({ onSelect, onAdd }: { onSelect: (id: string) => void; onAdd: (kind: string) => void }) {
+  const { data, today, act } = useGarden();
+  const zones = irrigationZones(data);
+  const runs = data.irrigation ?? [];
+  const ran = (zone: string, head: string | null = null) => runs.find((r) => r.id === runId(zone, today, head) && r.source !== "skipped");
+  return (
+    <section className="card watering">
+      <h3>💧 Watering</h3>
+      {zones.length === 0 && (
+        <p className="small muted">
+          No watering system on the map yet. Add a drip line and drag its ends across a bed, or put a sprinkler between beds. Lines and sprinklers on the same zone run together.
+        </p>
+      )}
+      {zones.map((z) => {
+        const zoneRan = ran(z.zone);
+        const last = lastRun(runs, z.zone, today);
+        return (
+          <div key={z.zone} className="zone-block">
+            <div className="zone-head">
+              <div>
+                <strong>{zoneLabel(z)}</strong>
+                <div className="small muted">
+                  {describeTimer(z.settings.timer)}
+                  {last ? ` · ran ${ranWhen(last.date, today)}` : ""}
+                </div>
+              </div>
+              {zoneRan ? (
+                <ActionButton className="ghost small" title="Undo" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, zoneRan.source === "timer" ? "skipped" : null))}>
+                  ✓ Ran today
+                </ActionButton>
+              ) : z.beds.length ? (
+                <ActionButton className="small" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, "manual"))}>
+                  💦 Run whole zone
+                </ActionButton>
+              ) : (
+                <span className="small muted">reaches no beds</span>
+              )}
+            </div>
+            <ul className="zone-lines">
+              {z.lines.map((l) => {
+                const lineRan = ran(z.zone, l.head.id);
+                return (
+                  <li key={l.head.id}>
+                    <div>
+                      <button className="ghost small" title="Select it on the map" onClick={() => onSelect(l.head.id)}>
+                        {kindDef(l.head.kind).icon} {l.head.name}
+                      </button>
+                      <div className="small muted">{l.beds.length ? `waters ${l.beds.map((b) => b.name).join(", ")}` : l.head.kind === "valve" ? "the zone's valve" : "reaches no bed yet"}</div>
+                    </div>
+                    {l.head.kind === "valve" || !l.beds.length ? (
+                      <span />
+                    ) : zoneRan ? (
+                      <span className="small muted">✓</span>
+                    ) : lineRan ? (
+                      <ActionButton className="ghost small" title="Undo" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, null, l.head.id))}>✓ Ran</ActionButton>
+                    ) : (
+                      <ActionButton className="small" title={`Just this one: waters ${l.beds.map((b) => b.name).join(", ")}`} onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, "manual", l.head.id))}>
+                        💧 Ran
+                      </ActionButton>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })}
+      <div className="row">
+        <button className="small" onClick={() => onAdd("drip-line")}>〰️ Add a drip line</button>
+        <button className="small" onClick={() => onAdd("sprinkler")}>💦 Add a sprinkler</button>
+      </div>
+      <p className="small muted">A run counts as watering for every planting in the beds it reaches. Select a line or sprinkler to set its zone, the zone&rsquo;s name and timer.</p>
+    </section>
   );
 }
 

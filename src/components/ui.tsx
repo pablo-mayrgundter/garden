@@ -227,15 +227,27 @@ export function NoteList({ notes, plantingNames }: { notes: Note[]; plantingName
   );
 }
 
-export function EventLog({ events, rain = [] }: { events: CareEvent[]; rain?: RainDay[] }) {
+export function EventLog({ events, rain = [], irrigation = [] }: { events: CareEvent[]; rain?: RainDay[]; irrigation?: { date: string; zone: string; label: string; source: string }[] }) {
   const { act } = useGarden();
-  if (!events.length && !rain.length) return <p className="empty">Nothing logged yet.</p>;
-  // Rainy days sit in the log with the care they stood in for, newest first.
-  const rows = [...events.map((e) => ({ date: e.date, e })), ...rain.map((r) => ({ date: r.date, r }))].sort((a, b) => b.date.localeCompare(a.date));
+  if (!events.length && !rain.length && !irrigation.length) return <p className="empty">Nothing logged yet.</p>;
+  // Rainy days and sprinkler runs sit in the log with the care they stood in for, newest first.
+  const rows = [
+    ...events.map((e) => ({ date: e.date, e })),
+    ...rain.map((r) => ({ date: r.date, r })),
+    ...irrigation.map((i) => ({ date: i.date, i })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
   return (
     <ul className="timeline">
       {rows.map((row) =>
-        "r" in row ? (
+        "i" in row ? (
+          <li key={`irrigation-${row.i.zone}-${row.i.date}`} className="rain-row">
+            <span className="date">{formatDate(row.i.date)}</span>
+            <span style={{ flex: 1 }}>
+              💦 {row.i.label} ran
+              <span className="muted small"> · counts as watering · {row.i.source === "timer" ? "timer" : "logged"}</span>
+            </span>
+          </li>
+        ) : "r" in row ? (
           <li key={`rain-${row.r.date}`} className="rain-row">
             <span className="date">{formatDate(row.r.date)}</span>
             <span style={{ flex: 1 }}>

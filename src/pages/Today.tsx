@@ -1,10 +1,11 @@
 import { Link } from "react-router";
 import { TaskForm } from "@/components/forms";
 import { ActionButton, CareRow, NoteList, Photo, TaskRow, TrayGrid } from "@/components/ui";
-import { logCare } from "@/lib/actions";
-import { addDays, formatDate } from "@/lib/dates";
+import { logCare, setZoneRun } from "@/lib/actions";
+import { addDays, formatDate, timeIn } from "@/lib/dates";
 import { cellRange, coverPhotos, notesFor, photosFor, plantingViews, sortedTrays, tasksFor, type PlantingView } from "@/lib/garden";
 import { useGarden } from "@/lib/GardenContext";
+import { describeTimer, formatTime, irrigationZones, lastRun, nextRun, ranWhen, runId, zoneLabel, type Zone } from "@/lib/irrigation";
 import type { CareItem, CareStatus } from "@/lib/schedule";
 
 export function Today() {
@@ -17,16 +18,18 @@ export function Today() {
   const byId = new Map(plantings.map((p) => [p.id, p]));
   const cover = (p: PlantingView) => byPlanting.get(p.id) ?? bySpecies.get(p.speciesId) ?? null;
 
-  // Watering is grouped per planter so one tap covers the whole tray.
-  const waterGroups = new Map<string, { label: string; ids: string[]; overdue: boolean; mist: boolean }>();
+  // Watering is grouped so one tap covers it all: by irrigation zone when sprinklers or drip water the bed (one run waters every bed in the zone), else per planter.
+  const waterGroups = new Map<string, { label: string; ids: string[]; overdue: boolean; mist: boolean; zone: Zone | null }>();
+  const time = timeIn(data.garden.timezone);
+  const zones = irrigationZones(data);
   const now: { p: PlantingView; item: CareItem }[] = [];
   const soon: typeof now = [];
   for (const p of plantings) {
     for (const item of p.care) {
       if (item.key === "water") {
         if (item.status === "upcoming") continue;
-        const key = p.trayId ?? p.id;
-        const g = waterGroups.get(key) ?? { label: p.trayName ?? p.name, ids: [], overdue: false, mist: item.title.includes("mist") };
+        const key = p.zone ? `zone:${p.zone.zone}` : (p.trayId ?? p.id);
+        const g = waterGroups.get(key) ?? { label: p.zone ? zoneLabel(p.zone) : (p.trayName ?? p.name), ids: [], overdue: false, mist: item.title.includes("mist"), zone: p.zone };
         g.ids.push(p.id);
         g.overdue ||= item.status === "overdue";
         waterGroups.set(key, g);
@@ -80,17 +83,38 @@ export function Today() {
               <span className="muted small">{attention} things</span>
             </div>
             <ul className="care-list">
-              {[...waterGroups.values()].map((g) => (
-                <li key={g.label} className="care-item">
-                  <div className="thumb" style={{ display: "grid", placeItems: "center", fontSize: "1.4rem" }}>💧</div>
-                  <div className="what">
-                    <div className="title">{g.mist ? "Mist" : "Water"} the {g.label}</div>
-                    <div className="small muted">{g.ids.map((id) => byId.get(id)!.name).join(", ")}</div>
-                  </div>
-                  <span className={`chip ${g.overdue ? "overdue" : "due"}`}>{g.overdue ? "overdue" : "today"}</span>
-                  <ActionButton onClick={() => act((ctx) => logCare(ctx, { plantingIds: g.ids, type: "watered" }))}>💧 Done</ActionButton>
-                </li>
-              ))}
+              {[...waterGroups.values()].map((g) => {
+                // Each crop once: three rows of beets read as "Beet".
+                const names = [...new Set(g.ids.map((id) => byId.get(id)!.name))].join(", ");
+                if (g.zone) {
+                  const z = g.zone;
+                  // The timer will get to it later today.
+                  const later = nextRun(z.settings.timer, today, time) === today;
+                  const beds = z.beds.filter((b) => g.ids.some((id) => byId.get(id)!.trayId === b.links.trayId)).map((b) => b.name);
+                  return (
+                    <li key={g.label} className="care-item">
+                      <div className="thumb" style={{ display: "grid", placeItems: "center", fontSize: "1.4rem" }}>💦</div>
+                      <div className="what">
+                        <div className="title">{later ? `${g.label} run at ${formatTime(z.settings.timer!.at)}` : `Run the ${g.label}`}</div>
+                        <div className="small muted">{beds.join(", ")}: {names}</div>
+                      </div>
+                      <span className={`chip ${later ? "upcoming" : g.overdue ? "overdue" : "due"}`}>{later ? "later today" : g.overdue ? "overdue" : "today"}</span>
+                      <ActionButton title={`Every planting in ${z.name}'s beds counts as watered`} onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, "manual"))}>💦 Ran</ActionButton>
+                    </li>
+                  );
+                }
+                return (
+                  <li key={g.label} className="care-item">
+                    <div className="thumb" style={{ display: "grid", placeItems: "center", fontSize: "1.4rem" }}>💧</div>
+                    <div className="what">
+                      <div className="title">{g.mist ? "Mist" : "Water"} the {g.label}</div>
+                      <div className="small muted">{names}</div>
+                    </div>
+                    <span className={`chip ${g.overdue ? "overdue" : "due"}`}>{g.overdue ? "overdue" : "today"}</span>
+                    <ActionButton onClick={() => act((ctx) => logCare(ctx, { plantingIds: g.ids, type: "watered" }))}>💧 Done</ActionButton>
+                  </li>
+                );
+              })}
               {now.map(({ p, item }) => (
                 <CareRow
                   key={`${p.id}-${item.key}`}
@@ -153,6 +177,8 @@ export function Today() {
             );
           })}
 
+          {zones.some((z) => z.trayIds.length) && <IrrigationCard zones={zones.filter((z) => z.trayIds.length)} time={time} />}
+
           {recentPhotos.length > 0 && (
             <section className="card">
               <h3>Latest photos</h3>
@@ -176,5 +202,46 @@ export function Today() {
         </div>
       </div>
     </>
+  );
+}
+
+/** Each zone that waters beds: its timer, when it last ran, and a way to say it ran (or didn't) today. */
+function IrrigationCard({ zones, time }: { zones: Zone[]; time: string }) {
+  const { data, today, act } = useGarden();
+  const runs = data.irrigation ?? [];
+  return (
+    <section className="card">
+      <h3>Irrigation</h3>
+      <ul className="zone-list">
+        {zones.map((z) => {
+          const todays = runs.find((r) => r.id === runId(z.zone, today));
+          const last = lastRun(runs, z.zone, today);
+          const next = nextRun(z.settings.timer, today, time);
+          return (
+            <li key={z.zone}>
+              <div>
+                <strong>💦 {zoneLabel(z)}</strong>
+                <div className="small muted">
+                  {z.beds.map((b) => b.name).join(", ")} · {describeTimer(z.settings.timer)}
+                  {last ? ` · ran ${ranWhen(last.date, today)}` : ""}
+                  {next === today ? ` · runs at ${formatTime(z.settings.timer!.at)}` : ""}
+                  {todays?.source === "skipped" ? " · skipped today" : ""}
+                </div>
+              </div>
+              {todays && todays.source !== "skipped" ? (
+                <ActionButton className="ghost small" title="It didn't run today after all" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, todays.source === "timer" ? "skipped" : null))}>
+                  Didn't run
+                </ActionButton>
+              ) : todays?.source === "skipped" ? (
+                <ActionButton className="ghost small" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, null))}>Undo</ActionButton>
+              ) : (
+                <ActionButton className="small" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, "manual"))}>Ran today</ActionButton>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="small muted">A run waters every planting in the zone&rsquo;s beds. Set timers on the map: select a sprinkler, drip line or valve.</p>
+    </section>
   );
 }

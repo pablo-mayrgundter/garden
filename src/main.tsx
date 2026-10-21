@@ -4,6 +4,7 @@ import { createHashRouter, Link, Outlet, RouterProvider } from "react-router";
 import { AssistantPanel } from "./components/AssistantPanel";
 import { GardenerPicker } from "./components/forms";
 import { Nav } from "./components/Nav";
+import { IrrigationSync } from "./components/IrrigationSync";
 import { RainSync } from "./components/RainSync";
 import { GardenProvider, useGarden } from "./lib/GardenContext";
 import { NewPlantPage, PlantPage, PlantsPage } from "./pages/Plants";
@@ -48,6 +49,7 @@ function Layout() {
       </main>
       <AssistantPanel />
       <RainSync />
+      <IrrigationSync />
     </>
   );
 }

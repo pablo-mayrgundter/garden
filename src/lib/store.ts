@@ -5,13 +5,13 @@
 
 import { openDB, type IDBPDatabase } from "idb";
 import type { MapEntity } from "./map/model.ts";
-import type { CareEvent, ChatRecord, Garden, GardenData, Note, Photo, Planting, RainDay, Species, Task, Tray } from "./types.ts";
+import type { CareEvent, ChatRecord, Garden, GardenData, IrrigationRun, Note, Photo, Planting, RainDay, Species, Task, Tray } from "./types.ts";
 
 export type GardenDB = IDBPDatabase;
 export type Provider = "claude" | "ollama";
 
-const DB_VERSION = 3;
-export const RECORD_STORES = ["species", "trays", "plantings", "events", "notes", "photos", "tasks", "mapEntities", "rain"] as const;
+const DB_VERSION = 4;
+export const RECORD_STORES = ["species", "trays", "plantings", "events", "notes", "photos", "tasks", "mapEntities", "rain", "irrigation"] as const;
 export type RecordStore = (typeof RECORD_STORES)[number];
 type StoreRecord = {
   species: Species;
@@ -23,6 +23,7 @@ type StoreRecord = {
   tasks: Task;
   mapEntities: MapEntity;
   rain: RainDay;
+  irrigation: IrrigationRun;
 };
 
 export function newId(): string {
@@ -57,6 +58,7 @@ export async function openGardenDb(name = "garden", hooks: OpenHooks = {}): Prom
       }
       if (oldVersion < 2) db.createObjectStore("mapEntities", { keyPath: "id" });
       if (oldVersion < 3) db.createObjectStore("rain", { keyPath: "id" });
+      if (oldVersion < 4) db.createObjectStore("irrigation", { keyPath: "id" });
     },
   });
   return db;
@@ -65,12 +67,12 @@ export async function openGardenDb(name = "garden", hooks: OpenHooks = {}): Prom
 /** Everything in this browser's garden, or null when no garden has been started here yet. */
 export async function loadAll(db: GardenDB): Promise<GardenData | null> {
   const tx = db.transaction(["meta", ...RECORD_STORES], "readonly");
-  const [garden, species, trays, plantings, events, notes, photos, tasks, mapEntities, rain] = await Promise.all([
+  const [garden, species, trays, plantings, events, notes, photos, tasks, mapEntities, rain, irrigation] = await Promise.all([
     tx.objectStore("meta").get("garden"),
     ...RECORD_STORES.map((s) => tx.objectStore(s).getAll()),
   ]);
   if (!garden) return null;
-  return { garden, species, trays, plantings, events, notes, photos, tasks, mapEntities, rain } as GardenData;
+  return { garden, species, trays, plantings, events, notes, photos, tasks, mapEntities, rain, irrigation } as GardenData;
 }
 
 export async function createGarden(db: GardenDB, input: { name: string; timezone: string; gardener: string | null }): Promise<void> {

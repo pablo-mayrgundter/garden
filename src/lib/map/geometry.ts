@@ -237,6 +237,26 @@ export function resizeFromCorner(
   return { x: ax + ox - w / 2, y: ay + oy - d / 2, w, d };
 }
 
+/** The two ends of a run (a drip line, a fence) along its long side, on the lot: start (west or north end before turning), then end. */
+export function lineEnds(e: Pick<MapEntity, "x" | "y" | "w" | "d" | "rot">): [Vec2, Vec2] {
+  const cx = e.x + e.w / 2;
+  const cy = e.y + e.d / 2;
+  const half = (e.w >= e.d ? [e.w / 2, 0] : [0, e.d / 2]) as Vec2;
+  const [dx, dy] = turn(half[0], half[1], e.rot ?? 0);
+  return [
+    [cx - dx, cy - dy],
+    [cx + dx, cy + dy],
+  ];
+}
+
+/** A run from one end to the other, `thickness` feet wide: running along x, turned to point from a to b. */
+export function lineFromEnds(a: Vec2, b: Vec2, thickness: number, minLength = 0.5): Pick<MapEntity, "x" | "y" | "w" | "d" | "rot"> {
+  const len = Math.max(minLength, Math.hypot(b[0] - a[0], b[1] - a[1]));
+  const rot = Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9 ? 0 : (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+  const [cx, cy] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  return { x: cx - len / 2, y: cy - thickness / 2, w: len, d: thickness, rot: Math.round(rot * 100) / 100 };
+}
+
 /** Degrees, normalized to (-180, 180]. */
 export function normDeg(deg: number): number {
   const v = ((deg % 360) + 360) % 360;
