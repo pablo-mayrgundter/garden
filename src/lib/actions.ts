@@ -549,8 +549,12 @@ export async function recordIrrigation(ctx: ActionCtx, runs: IrrigationRun[]) {
   if (runs.length) await putRecords(ctx.db, "irrigation", runs);
 }
 
-/** Says a zone ran on a day ("manual"), or that its timer's run didn't happen ("skipped"); null clears the day's record. */
-export async function setZoneRun(ctx: ActionCtx, zone: string, date: string, source: "manual" | "skipped" | null) {
-  if (source == null) return deleteRecord(ctx.db, "irrigation", runId(zone, date));
-  await putRecords(ctx.db, "irrigation", [{ id: runId(zone, date), zone, date, source, by: ctx.by, updatedAt: now() }]);
+/**
+ * Says a zone ran on a day ("manual"), or that its timer's run didn't happen
+ * ("skipped"); null clears the day's record. With `head`, it's just that one
+ * drip line or sprinkler.
+ */
+export async function setZoneRun(ctx: ActionCtx, zone: string, date: string, source: "manual" | "skipped" | null, head: string | null = null) {
+  if (source == null) return deleteRecord(ctx.db, "irrigation", runId(zone, date, head));
+  await putRecords(ctx.db, "irrigation", [{ id: runId(zone, date, head), zone, date, head, source, by: ctx.by, updatedAt: now() }]);
 }

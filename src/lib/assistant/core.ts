@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { addMapEntity, addNote, addTask, applyTrayLayout, deleteMapEntity, logCare, setZoneRun, trayMarkdown, updateMapEntity, updatePlanting, type ActionCtx } from "../actions.ts";
-import { describeTimer, irrigationZones, runId, zoneLabel } from "../irrigation.ts";
+import { describeTimer, irrigationZones, lineLabel, runId, zoneLabel } from "../irrigation.ts";
 import { compassPoint, longSideBearing } from "../map/geometry.ts";
 import { KINDS, kindDef } from "../map/kinds.ts";
 import { buildingOpenings } from "../map/openings.ts";
@@ -178,8 +178,11 @@ export function buildContext(data: GardenData, userName: string | null, location
       `Irrigation zones (a run counts as watering for every planting in the zone's beds):\n${zones
         .map((z) => {
           const beds = z.beds.map((b) => `${b.name}${b.links.trayId ? ` (planter [${b.links.trayId}])` : ""}`).join(", ");
-          const ran = runs.filter((r) => r.zone === z.zone).map((r) => `${r.date} ${r.source === "timer" ? "timer" : r.source === "skipped" ? "skipped" : "logged"}`);
-          return `- zone "${z.zone}": ${zoneLabel(z)} — waters ${beds || "no beds yet"}; ${describeTimer(z.settings.timer)}${ran.length ? `; last 10 days: ${ran.join(", ")}` : "; no runs in the last 10 days"}`;
+          const lines = z.lines.map((l) => `[${l.head.id}] ${l.head.kind} "${l.head.name}" → ${l.beds.map((b) => b.name).join(", ") || "no beds"}`).join("; ");
+          const ran = runs
+            .filter((r) => r.zone === z.zone)
+            .map((r) => `${r.date} ${r.head ? `${z.lines.find((l) => l.head.id === r.head)?.head.name ?? "a line"} only, ` : ""}${r.source === "timer" ? "timer" : r.source === "skipped" ? "skipped" : "logged"}`);
+          return `- zone "${z.zone}": ${zoneLabel(z)} — waters ${beds || "no beds yet"}; lines: ${lines}; ${describeTimer(z.settings.timer)}${ran.length ? `; last 10 days: ${ran.join(", ")}` : "; no runs in the last 10 days"}`;
         })
         .join("\n")}`,
     );
@@ -306,9 +309,10 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "irrigation_ran",
     description:
-      "Record that an irrigation zone ran (sprinklers or drip) on a day, which counts as watering for every planting in the zone's beds; or, with ran 'no', that it didn't (a timer run that was skipped, or a run logged by mistake).",
+      "Record that an irrigation zone ran (sprinklers or drip) on a day, which counts as watering for every planting in the zone's beds, or that just one of its lines did (it waters only that line's beds); or, with ran 'no', that it didn't (a timer run that was skipped, or a run logged by mistake).",
     properties: {
       zone: { type: "string", description: "The zone, as given in the irrigation zones list (e.g. '1')." },
+      line_id: { type: "string", description: "Map item ID of the one drip line or sprinkler that ran, or empty string for the whole zone." },
       date: { type: "string", description: "YYYY-MM-DD, or empty string for today." },
       ran: { type: "string", enum: ["yes", "no"] },
     },
@@ -359,7 +363,7 @@ const EditMap = z.object({
     )
     .min(1),
 });
-const IrrigationRan = z.object({ zone: z.string().min(1), date: z.string().default(""), ran: z.enum(["yes", "no"]).default("yes") });
+const IrrigationRan = z.object({ zone: z.string().min(1), line_id: z.string().default(""), date: z.string().default(""), ran: z.enum(["yes", "no"]).default("yes") });
 const PlantingRef = z.object({ planting_id: z.string() });
 const PhotoRef = z.object({ photo_id: z.string() });
 
@@ -484,14 +488,20 @@ export async function runTool(name: string, raw: unknown, deps: AssistantDeps): 
         if (!isDate(date)) return fail("date must be YYYY-MM-DD");
         const zone = irrigationZones(data).find((z) => z.zone === r.data.zone);
         if (!zone) return fail(`There's no zone "${r.data.zone}" on the map. Add sprinklers or drip lines on that zone with edit_map first.`);
+        const line = r.data.line_id ? zone.lines.find((l) => l.head.id === r.data.line_id) : undefined;
+        if (r.data.line_id && !line) return fail(`[${r.data.line_id}] isn't a drip line or sprinkler on zone "${zone.zone}".`);
+        const head = line?.head.id ?? null;
+        const label = line ? lineLabel(zone, line) : zoneLabel(zone);
+        const beds = line ? line.beds : zone.beds;
         if (r.data.ran === "yes") {
-          await deps.act((ctx) => setZoneRun(ctx, zone.zone, date, "manual"));
-          const n = data.plantings.filter((p) => p.trayId && zone.trayIds.includes(p.trayId)).length;
-          return { text: `Recorded that ${zoneLabel(zone)} ran on ${date}; that counts as watering for the ${n} planting(s) in ${zone.beds.map((b) => b.name).join(", ") || "its beds"}.`, summary: `Recorded a ${zoneLabel(zone)} run` };
+          await deps.act((ctx) => setZoneRun(ctx, zone.zone, date, "manual", head));
+          const trays = new Set(beds.map((b) => b.links.trayId));
+          const n = data.plantings.filter((p) => p.trayId && trays.has(p.trayId)).length;
+          return { text: `Recorded that ${label} ran on ${date}; that counts as watering for the ${n} planting(s) in ${beds.map((b) => b.name).join(", ") || "its beds"}.`, summary: `Recorded a ${label} run` };
         }
-        const existing = (data.irrigation ?? []).find((x) => x.id === runId(zone.zone, date));
-        await deps.act((ctx) => setZoneRun(ctx, zone.zone, date, existing?.source === "timer" || zone.settings.timer ? "skipped" : null));
-        return { text: `Recorded that ${zoneLabel(zone)} didn't run on ${date}.`, summary: `Marked ${zoneLabel(zone)} as not run` };
+        const existing = (data.irrigation ?? []).find((x) => x.id === runId(zone.zone, date, head));
+        await deps.act((ctx) => setZoneRun(ctx, zone.zone, date, !head && (existing?.source === "timer" || zone.settings.timer) ? "skipped" : null, head));
+        return { text: `Recorded that ${label} didn't run on ${date}.`, summary: `Marked ${label} as not run` };
       }
       case "get_planting": {
         const r = PlantingRef.safeParse(raw);

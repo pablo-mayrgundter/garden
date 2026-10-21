@@ -40,12 +40,14 @@ export type ZoneTimer = {
   paused: boolean;
 };
 
-/** One run of an irrigation zone on one day. */
+/** One run of an irrigation zone (or just one of its lines) on one day. */
 export type IrrigationRun = {
-  /** `${zone}:${date}`: one record per zone per day. */
+  /** `${zone}:${date}` for the whole zone, `${zone}:${date}:${head}` for one line: one record each per day. */
   id: string;
   zone: string;
   date: string;
+  /** The one drip line or sprinkler (map item ID) that ran, when it wasn't the whole zone. */
+  head?: string | null;
   /** "timer": recorded from the zone's timer; "manual": someone said it ran; "skipped": the timer's run that day didn't happen. */
   source: "timer" | "manual" | "skipped";
   by?: string | null;

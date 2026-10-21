@@ -6,7 +6,8 @@
 import type { ReactNode } from "react";
 import type { GardenData } from "../types.ts";
 import { bedPlants } from "./bedPlants.ts";
-import { boxFaces, entityProjector, orderFaces, pathOf, roundedRect, type Face, type Projector, type Vec3 } from "./geometry.ts";
+import { bedsWatered } from "../irrigation.ts";
+import { boxFaces, entityProjector, lineEnds, orderFaces, pathOf, roundedRect, turn, type Face, type Projector, type Vec3 } from "./geometry.ts";
 import { treeTrunk } from "./kinds.ts";
 import type { MapEntity, Opening } from "./model.ts";
 import { buildingOpenings, houseStories, wallLine, WALLS } from "./openings.ts";
@@ -107,6 +108,8 @@ export type DrawCtx = {
   sunShadows?: boolean;
   /** The door or window being edited, drawn highlighted. */
   selectedOpening?: string | null;
+  /** The view's projector before the entity's turn, for drawing things on other entities (a drip line on its bed). */
+  plain?: Projector;
 };
 
 const ink = { stroke: PAL.ink, strokeWidth: 1, vectorEffect: "non-scaling-stroke" as const, strokeLinejoin: "round" as const };
@@ -409,19 +412,92 @@ function Sprinkler(e: MapEntity, ctx: DrawCtx) {
   );
 }
 
+/** Where a drip line runs, and the beds it waters, for drawing it: the bed's rows, and which end the header goes at. */
+function dripBeds(e: MapEntity, data: GardenData) {
+  return bedsWatered(e, data.mapEntities).map((bed) => {
+    const tray = bed.links.trayId ? data.trays.find((t) => t.id === bed.links.trayId) : undefined;
+    const alongX = bed.w >= bed.d;
+    const [length, width] = alongX ? [bed.w, bed.d] : [bed.d, bed.w];
+    const rows = tray?.layout === "rows" ? Math.max(1, tray.rows.length) : Math.max(2, Math.round(width / 1.25));
+    return { bed, alongX, length, width, rows };
+  });
+}
+
+const DRIP = "#2b2b2b";
+/** An invisible wide edge on a thin line, so it's easy to click and grab. */
+const hit = { stroke: "#000", strokeOpacity: 0, strokeWidth: 16, vectorEffect: "non-scaling-stroke" as const, pointerEvents: "stroke" as const, fill: "none" };
+
+/**
+ * A drip line: tubing on the ground, with its emitters. Where it waters a bed
+ * (running over it, or picked under Belongs to), it's drawn on top of the
+ * soil as the bed's drip system: a header across the end nearest where the
+ * tubing comes in, feeding a lateral down each row, so it doesn't vanish
+ * under the bed and stays easy to click.
+ */
 function DripLine(e: MapEntity, ctx: DrawCtx) {
-  const { pj } = ctx;
-  const alongX = e.w >= e.d;
-  const len = alongX ? e.w : e.d;
-  const [ax, ay] = pj.p(e.x + (alongX ? 0 : e.w / 2), e.y + (alongX ? e.d / 2 : 0), e.z + 0.05);
-  const [bx, by] = pj.p(e.x + (alongX ? e.w : e.w / 2), e.y + (alongX ? e.d / 2 : e.d), e.z + 0.05);
+  const { pj, data } = ctx;
+  const plain = ctx.plain ?? pj;
+  const beds = dripBeds(e, data);
+  const [a, b] = lineEnds(e);
+  // The tubing itself: up on a bed's top where it crosses one.
+  const onTop = (x: number, y: number) => {
+    const over = beds.find(({ bed }) => {
+      const [dx, dy] = turn(x - (bed.x + bed.w / 2), y - (bed.y + bed.d / 2), -(bed.rot ?? 0));
+      return Math.abs(dx) <= bed.w / 2 && Math.abs(dy) <= bed.d / 2;
+    });
+    return over ? over.bed.z + over.bed.h + 0.04 : e.z + 0.05;
+  };
+  const tube = Array.from({ length: 25 }, (_, i) => {
+    const t = i / 24;
+    const x = a[0] + (b[0] - a[0]) * t;
+    const y = a[1] + (b[1] - a[1]) * t;
+    return plain.p(x, y, onTop(x, y));
+  });
+  const tubePath = tube.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(3)} ${y.toFixed(3)}`).join(" ");
+  const parts: ReactNode[] = [];
+  for (const { bed, alongX, length, width, rows } of beds) {
+    const bp = entityProjector(plain, bed);
+    const z = bed.z + bed.h + 0.04;
+    const inset = 0.25;
+    // A point in the bed by how far along its length and across its width.
+    const at = (along: number, across: number) => (alongX ? bp.p(bed.x + along, bed.y + across, z) : bp.p(bed.x + across, bed.y + along, z));
+    // The header goes across the end of the bed nearest where the tubing starts.
+    const [s0, s1] = [at(inset, width / 2), at(length - inset, width / 2)];
+    const [ax, ay] = plain.p(a[0], a[1], z);
+    const headerAt = Math.hypot(s0[0] - ax, s0[1] - ay) <= Math.hypot(s1[0] - ax, s1[1] - ay) ? inset : length - inset;
+    const far = headerAt === inset ? length - inset : inset;
+    // Like drip tape, each lateral runs just beside its row of plants rather than over them.
+    const gap = (width - inset * 2) / rows;
+    const across = Array.from({ length: rows }, (_, i) => inset + (i + 0.5) * gap + gap * 0.28);
+    const h0 = at(headerAt, across[0]);
+    const h1 = at(headerAt, across.at(-1)!);
+    parts.push(<line key={`${bed.id}-h`} x1={h0[0]} y1={h0[1]} x2={h1[0]} y2={h1[1]} stroke={DRIP} strokeWidth={3} strokeLinecap="round" vectorEffect="non-scaling-stroke" />);
+    parts.push(<line key={`${bed.id}-hh`} x1={h0[0]} y1={h0[1]} x2={h1[0]} y2={h1[1]} {...hit} />);
+    across.forEach((c, i) => {
+      const [p0, p1] = [at(headerAt, c), at(far, c)];
+      parts.push(<line key={`${bed.id}-l${i}`} x1={p0[0]} y1={p0[1]} x2={p1[0]} y2={p1[1]} stroke={DRIP} strokeWidth={1.75} strokeLinecap="round" vectorEffect="non-scaling-stroke" />);
+      // An emitter every foot, dripping.
+      for (let f = 0.5; f < length - inset * 2; f += 1) {
+        const [qx, qy] = at(headerAt === inset ? inset + f : length - inset - f, c);
+        parts.push(<circle key={`${bed.id}-e${i}-${f}`} cx={qx} cy={qy} r={0.11} fill={PAL.water} stroke={DRIP} strokeWidth={0.04} />);
+      }
+    });
+  }
+  // Emitters along tubing that isn't over a bed.
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  const emitters = beds.length
+    ? []
+    : Array.from({ length: Math.floor(len) }, (_, i) => {
+        const t = (i + 0.5) / len;
+        const [x, y] = plain.p(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, e.z + 0.05);
+        return <circle key={i} cx={x} cy={y} r={0.13} fill={PAL.water} />;
+      });
   return (
     <>
-      <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#222" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-      {Array.from({ length: Math.floor(len) }, (_, i) => {
-        const t = (i + 0.5) / len;
-        return <circle key={i} cx={ax + (bx - ax) * t} cy={ay + (by - ay) * t} r={0.12} fill={PAL.water} />;
-      })}
+      <path d={tubePath} stroke={DRIP} strokeWidth={beds.length ? 3 : 2.5} strokeLinecap="round" strokeLinejoin="round" fill="none" vectorEffect="non-scaling-stroke" />
+      {emitters}
+      {parts}
+      <path d={tubePath} {...hit} />
     </>
   );
 }
@@ -591,7 +667,7 @@ export const DRAWERS: Record<string, Drawer> = {
 
 export function drawEntity(e: MapEntity, base: DrawCtx): ReactNode {
   // Drawers work as if the entity were square to the lot; the projector turns it.
-  const ctx = { ...base, pj: entityProjector(base.pj, e) };
+  const ctx = { ...base, pj: entityProjector(base.pj, e), plain: base.pj };
   const d = DRAWERS[e.kind];
   if (d) return d(e, ctx);
   return <Faces pj={ctx.pj} faces={box(e, { top: "#e5dccb", sideX: "#cfc4ae", sideY: "#d9cfba" })} />;

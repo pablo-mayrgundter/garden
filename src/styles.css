@@ -412,6 +412,12 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 
 .zone-list { list-style: none; padding: 0; margin: 0 0 8px; display: grid; gap: 10px; }
 .zone-list li { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.zone-block { padding: 8px 0; border-top: 1px solid var(--border); }
+.zone-block:first-of-type { border-top: none; padding-top: 0; }
+.zone-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.zone-lines { list-style: none; padding: 0 0 0 8px; margin: 6px 0 0; display: grid; gap: 4px; }
+.zone-lines li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.zone-lines li .muted { padding-left: 10px; }
 .zone-days { display: flex; gap: 4px; flex-wrap: wrap; }
 .zone-days button { min-width: 2.4em; padding: 4px 6px; }
 .zone-days button.on { background: var(--green-soft); color: var(--green); border-color: var(--green); font-weight: 600; }

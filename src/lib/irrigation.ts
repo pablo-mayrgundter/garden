@@ -11,7 +11,9 @@
 // - a valve: the bed it's linked to (it's mostly there to name the zone and show where the controls are).
 // Timer runs are recorded as they come due (IrrigationSync), one record per
 // zone per day, so changing or pausing a timer never rewrites the past, and a
-// day's run can be marked skipped.
+// day's run can be marked skipped. A single drip line or sprinkler can also be
+// run on its own (hand-opened, or a valve per line): that run waters only its
+// own beds.
 
 import { addDays, formatDate } from "./dates.ts";
 import { turn, type Vec2 } from "./map/geometry.ts";
@@ -25,7 +27,7 @@ const BED_KINDS = new Set(["raised-bed", "in-ground-bed", "herb-garden", "contai
 const BACKFILL_DAYS = 30;
 
 export const zoneOf = (e: Pick<MapEntity, "props">) => String(e.props.zone ?? "1").trim() || "1";
-export const runId = (zone: string, date: string) => `${zone}:${date}`;
+export const runId = (zone: string, date: string, head?: string | null) => (head ? `${zone}:${date}:${head}` : `${zone}:${date}`);
 
 export type Zone = {
   zone: string;
@@ -39,7 +41,13 @@ export type Zone = {
   /** The beds it waters, and their planters. */
   beds: MapEntity[];
   trayIds: string[];
+  /** Each of its drip lines and sprinklers (and valves), with what that one waters. */
+  lines: ZoneLine[];
 };
+
+export type ZoneLine = { head: MapEntity; beds: MapEntity[]; trayIds: string[] };
+
+const traysOf = (beds: MapEntity[]) => [...new Set(beds.map((b) => b.links.trayId).filter((t): t is string => !!t))];
 
 /** A point in an entity's own (unturned) frame, on the lot; and back. */
 const toLot = (e: MapEntity, x: number, y: number): Vec2 => {
@@ -81,7 +89,13 @@ export function irrigationZones(data: Pick<GardenData, "mapEntities" | "garden">
     .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
     .map(([zone, heads]) => {
       const settings = data.garden.zones?.find((z) => z.zone === zone) ?? { zone, name: null, timer: null };
-      const beds = [...new Map(heads.flatMap((h) => bedsWatered(h, data.mapEntities)).map((b) => [b.id, b])).values()];
+      const lines = heads
+        .map((head) => {
+          const beds = bedsWatered(head, data.mapEntities);
+          return { head, beds, trayIds: traysOf(beds) };
+        })
+        .sort((a, b) => a.head.name.localeCompare(b.head.name, undefined, { numeric: true }));
+      const beds = [...new Map(lines.flatMap((l) => l.beds).map((b) => [b.id, b])).values()];
       const kinds = new Set(heads.map((h) => h.kind));
       const what = kinds.has("sprinkler") && kinds.has("drip-line") ? "sprinklers and drip lines" : kinds.has("sprinkler") ? "sprinklers" : kinds.has("drip-line") ? "drip lines" : "irrigation";
       return {
@@ -91,7 +105,8 @@ export function irrigationZones(data: Pick<GardenData, "mapEntities" | "garden">
         settings,
         heads,
         beds,
-        trayIds: [...new Set(beds.map((b) => b.links.trayId).filter((t): t is string => !!t))],
+        trayIds: traysOf(beds),
+        lines,
       };
     });
 }
@@ -136,14 +151,27 @@ export function nextRun(t: ZoneTimer | null, today: string, time: string): strin
   return null;
 }
 
+/** What a run covers: the whole zone, or the one line that ran. Null when the zone or line is gone from the map. */
+export function runCovers(zones: Zone[], r: IrrigationRun): { label: string; trayIds: string[] } | null {
+  const z = zones.find((x) => x.zone === r.zone);
+  if (!z) return null;
+  if (!r.head) return { label: zoneLabel(z), trayIds: z.trayIds };
+  const line = z.lines.find((l) => l.head.id === r.head);
+  return line ? { label: lineLabel(z, line), trayIds: line.trayIds } : null;
+}
+
+export const lineLabel = (z: Pick<Zone, "name">, l: ZoneLine) => `${l.head.name} (${z.name})`;
+
 /** The days irrigation watered a planter, oldest first (skipped runs don't count). */
 export function irrigationFor(zones: Zone[], runs: IrrigationRun[], trayId: string | null | undefined, today: string): { date: string; zone: string; label: string; source: IrrigationRun["source"] }[] {
   if (!trayId) return [];
-  const mine = new Map(zones.filter((z) => z.trayIds.includes(trayId)).map((z) => [z.zone, z]));
-  return runs
-    .filter((r) => r.source !== "skipped" && r.date <= today && mine.has(r.zone))
-    .map((r) => ({ date: r.date, zone: r.zone, label: zoneLabel(mine.get(r.zone)!), source: r.source }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const out: { date: string; zone: string; label: string; source: IrrigationRun["source"] }[] = [];
+  for (const r of runs) {
+    if (r.source === "skipped" || r.date > today) continue;
+    const covers = runCovers(zones, r);
+    if (covers?.trayIds.includes(trayId)) out.push({ date: r.date, zone: r.zone, label: covers.label, source: r.source });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -163,9 +191,9 @@ export function describeTimer(t: ZoneTimer | null): string {
   return `${when} at ${formatTime(t.at)}`;
 }
 
-/** "ran today", "ran yesterday", "ran Oct 18": when a zone last ran, for labels. */
-export function lastRun(runs: IrrigationRun[], zone: string, today: string): IrrigationRun | null {
-  return runs.filter((r) => r.zone === zone && r.source !== "skipped" && r.date <= today).sort((a, b) => a.date.localeCompare(b.date)).at(-1) ?? null;
+/** When a whole zone last ran (or, given a line, that line on its own). */
+export function lastRun(runs: IrrigationRun[], zone: string, today: string, head: string | null = null): IrrigationRun | null {
+  return runs.filter((r) => r.zone === zone && (r.head ?? null) === head && r.source !== "skipped" && r.date <= today).sort((a, b) => a.date.localeCompare(b.date)).at(-1) ?? null;
 }
 
 export const ranWhen = (date: string, today: string) => (date === today ? "today" : date === addDays(today, -1) ? "yesterday" : `on ${formatDate(date)}`);

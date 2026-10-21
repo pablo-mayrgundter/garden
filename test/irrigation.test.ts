@@ -5,6 +5,7 @@ import { recordRain, setZone, setZoneRun, type ActionCtx } from "../src/lib/acti
 import { runTool } from "../src/lib/assistant/core.ts";
 import { plantingViews } from "../src/lib/garden.ts";
 import { bedsWatered, describeTimer, irrigationFor, irrigationZones, nextRun, timerRunsDue, zoneFor } from "../src/lib/irrigation.ts";
+import { lineEnds, lineFromEnds } from "../src/lib/map/geometry.ts";
 import { kindDef } from "../src/lib/map/kinds.ts";
 import type { MapEntity } from "../src/lib/map/model.ts";
 import { siteTemplate } from "../src/lib/map/template.ts";
@@ -61,7 +62,7 @@ test("zones group their heads, name themselves, and list the planters they water
 });
 
 const daily = (since: string, extra: Partial<ZoneTimer> = {}): ZoneTimer => ({ days: [0, 1, 2, 3, 4, 5, 6], at: "06:00", since, paused: false, ...extra });
-const zoneWith = (timer: ZoneTimer | null) => [{ zone: "1", name: "Zone 1", what: "sprinklers", settings: { zone: "1", name: null, timer }, heads: [], beds: [], trayIds: ["t1"] }];
+const zoneWith = (timer: ZoneTimer | null) => [{ zone: "1", name: "Zone 1", what: "sprinklers", settings: { zone: "1", name: null, timer }, heads: [], beds: [], trayIds: ["t1"], lines: [] }];
 
 test("timer runs come due from the day it was set, today once the start time passes", () => {
   const zones = zoneWith(daily("2026-10-18"));
@@ -178,5 +179,50 @@ test("the assistant records a zone run in one go, and knows the zones", async ()
   assert.ok(!added.isError, added.text);
   const s = (await ctx()).data.mapEntities.find((e) => e.kind === "sprinkler" && e.props.zone === "2")!;
   assert.equal(s.props.radius, 6);
+  await db.close();
+});
+
+test("a run is placed by its two ends: dragging one end keeps the other where it was", () => {
+  const drip = head("drip-line", 9, 11.9); // 8 ft east–west from (9, 12)
+  const [a, b] = lineEnds(drip);
+  assert.deepEqual(a.map((v) => +v.toFixed(6)), [9, 12]);
+  assert.deepEqual(b.map((v) => +v.toFixed(6)), [17, 12]);
+  // Drag the east end down to (9, 20): now 8 ft running south, the west end unmoved.
+  const moved = { ...drip, ...lineFromEnds(a, [9, 20], 0.2) };
+  assert.equal(moved.w, 8);
+  assert.equal(moved.rot, 90);
+  const [a2, b2] = lineEnds(moved);
+  assert.deepEqual(a2.map((v) => +v.toFixed(6)), [9, 12]);
+  assert.deepEqual(b2.map((v) => +v.toFixed(6)), [9, 20]);
+  // Diagonal across Bed 2 (x 18–26, y 10–14), from corner to corner: it waters that bed.
+  const diag = { ...drip, ...lineFromEnds([18.5, 10.5], [25.5, 13.5], 0.2) };
+  assert.deepEqual(bedsWatered(diag, template).map((x) => x.name), ["Bed 2"]);
+});
+
+test("one drip line run waters just its own bed; the whole zone waters them all", async () => {
+  const { db, today, ctx } = await garden("irrigation-line");
+  await putRecords(db, "mapEntities", [head("drip-line", 9, 11.9, { id: "drip1", name: "Bed 1 drip" })]);
+  const zone = irrigationZones((await ctx()).data)[0];
+  assert.deepEqual(zone.lines.map((l) => [l.head.name, l.beds.map((b) => b.name)]), [
+    ["Bed 1 drip", ["Bed 1"]],
+    ["Sprinkler", ["Bed 1", "Bed 2"]],
+  ]);
+  await setZoneRun(await ctx(), "1", today, "manual", "drip1");
+  const water = (data: GardenData) => new Map(plantingViews(data, today).map((v) => [v.name, v.care.find((c) => c.key === "water")!]));
+  let w = water((await ctx()).data);
+  assert.equal(w.get("Beet")!.status, "upcoming");
+  assert.match(w.get("Beet")!.detail!, /Bed 1 drip \(Zone 1\) ran today/);
+  assert.notEqual(w.get("Radish")!.status, "upcoming", "the drip line doesn't reach Bed 2");
+  await setZoneRun(await ctx(), "1", today, "manual");
+  w = water((await ctx()).data);
+  assert.equal(w.get("Radish")!.status, "upcoming");
+  // Through the assistant, by line ID.
+  const deps = { db, today, gardener: null, latest: () => cache, act: async <T,>(fn: (c: ActionCtx) => Promise<T>) => fn(await ctx()) };
+  let cache = (await ctx()).data;
+  const out = await runTool("irrigation_ran", { zone: "1", line_id: "drip1", date: "2026-10-20", ran: "yes" }, deps);
+  assert.match(out.text, /Bed 1 drip \(Zone 1\) ran on 2026-10-20.*1 planting\(s\) in Bed 1/);
+  cache = (await ctx()).data;
+  assert.ok(cache.irrigation.some((r) => r.id === "1:2026-10-20:drip1" && r.head === "drip1"));
+  assert.ok((await runTool("irrigation_ran", { zone: "1", line_id: "nope", date: "", ran: "yes" }, deps)).isError);
   await db.close();
 });

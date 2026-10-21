@@ -38,6 +38,8 @@ export type KindDef = {
   round?: boolean;
   /** Has doors and windows (see openings.ts). */
   openings?: boolean;
+  /** A run (drip line, fence): edited by dragging its two ends rather than a corner and a turn handle. */
+  line?: boolean;
   /** Geometry that follows from the kind's settings (a house's height from its stories); applied on every change. */
   derive?: (e: Pick<MapEntity, "props" | "h">) => Partial<Pick<MapEntity, "h">>;
 };
@@ -111,12 +113,13 @@ export const KINDS: KindDef[] = [
     icon: "🪵",
     layer: "structure",
     resizable: true,
-    description: "A fence run; posts every 8 ft along its long side.",
+    description: "A fence run; posts every 8 ft along its long side. Drag either end to place it.",
+    line: true,
     defaults: { name: "Fence", w: 20, d: 0.3, h: 6, props: { style: "privacy" } },
     fields: [{ key: "style", label: "Style", type: "select", options: opts("privacy", "picket", "wire") }],
   },
   { kind: "gate", label: "Gate", icon: "🚪", layer: "structure", resizable: true, description: "Gate in a fence.", defaults: { name: "Gate", w: 4, d: 0.3, h: 6 } },
-  { kind: "trellis", label: "Trellis", icon: "🪜", layer: "structure", resizable: true, description: "Trellis or espalier wires.", defaults: { name: "Trellis", w: 8, d: 0.3, h: 6 }, links: ["entity"] },
+  { kind: "trellis", label: "Trellis", icon: "🪜", layer: "structure", resizable: true, line: true, description: "Trellis or espalier wires.", defaults: { name: "Trellis", w: 8, d: 0.3, h: 6 }, links: ["entity"] },
   {
     kind: "netting",
     label: "Netting",
@@ -253,7 +256,8 @@ export const KINDS: KindDef[] = [
     layer: "irrigation",
     flat: true,
     resizable: true,
-    description: "Drip tubing run along a bed or row.",
+    description: "Drip tubing: drag its ends across a bed (or pick the bed under Belongs to) and it waters that bed's rows.",
+    line: true,
     defaults: { name: "Drip line", w: 8, d: 0.2, h: 0.05, props: { zone: "1" } },
     fields: [{ key: "zone", label: "Zone", type: "text" }],
     links: ["entity"],

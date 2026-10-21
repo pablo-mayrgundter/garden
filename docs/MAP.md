@@ -144,14 +144,17 @@ A kind can also say:
   - a drip line: the bed it's linked to under *Belongs to*, else the beds it runs through;
   - a valve: the bed it's linked to. A valve is mostly there to show where the controls are.
 - **Settings** (`garden.zones`, in the garden file): a name ("Back beds") and a timer, set in the zone panel that shows when a sprinkler, drip line or valve is selected. A timer is the days of the week, a start time in the garden's time zone, and a paused switch.
-- **Runs** (the `irrigation` store, in the garden file): one record per zone per day.
+- **Runs** (the `irrigation` store, in the garden file): one record per zone per day, and one per line per day for a line run on its own. A single drip line or sprinkler can run by itself (`head` on the run: a hand-opened line, or a valve per line); that run waters only that line's beds.
   - *timer*: recorded by `IrrigationSync` as the start time passes, and for missed days since the timer was set (up to a month back), while the app is open.
   - *manual*: someone tapped *Ran* (Today, or the zone panel), or told the assistant.
   - *skipped*: the timer's run that day didn't happen (*Didn't run* on Today); it doesn't count, and the timer won't fill the day in again.
   - Changing a timer takes effect from that day, so earlier runs stay as they were.
 - **Watering:** the care schedule takes the latest of a hand watering, a zone run and rain (`careSchedule`'s `irrigation` input). A run shows as "Zone 1 sprinklers ran today, which counts" and in the planting's history.
+- **Watering panel** (map side panel, with nothing selected): each zone with its timer and last run, and a *Run whole zone* button. Under it, each of the zone's drip lines and sprinklers, the beds it waters, and a *Ran* button for just that one. Tap a line's name to select it on the map. Buttons there add a drip line or a sprinkler.
+- **Drawing:** a drip line that runs over a bed (or is linked to one) is drawn on top of the bed, not under it on the ground. It shows as the bed's drip system: a header across the end nearest where the tubing comes in, and a lateral beside each planted row (the planter's rows, or about one per 1¼ ft) with emitters every foot. The tubing and header have a wide invisible edge, so they're easy to click.
+- **Placing runs:** drip lines, fences and trellises are *runs* (`line` in the kinds registry). When one is selected, a big knob at each end (white at the start, blue at the end) drags that end while the other stays put, so a line can be laid across a bed at any angle (`lineEnds`, `lineFromEnds`). Other things keep the corner (resize) and ⟳ (turn) knobs, now larger, with a white halo so they show on any ground.
 - **Today:** due watering is grouped by zone ("Run the Zone 1 sprinklers", or "…run at 6:00 AM" when the timer still has to run today), with one *Ran* button. Plantings no zone waters are grouped by planter as before. An *Irrigation* card lists each zone that waters beds: its timer, when it last ran, and *Ran today* / *Didn't run*.
-- **Assistant:** its context lists the zones, the beds they water, their timers and the last 10 days of runs. `irrigation_ran` records a run (or that one didn't happen), and `edit_map` can set a sprinkler's zone and spray radius when it adds the irrigation to the map.
+- **Assistant:** its context lists the zones, their lines (with IDs) and the beds each waters, their timers, and the last 10 days of runs. `irrigation_ran` records a zone's run, or one line's with `line_id`, or that one didn't happen. `edit_map` can set a sprinkler's zone and spray radius when it adds the irrigation to the map.
 - Seedlings in outdoor beds are kept moist, not misted: "mist" is for trays.
 
 ## Animation
