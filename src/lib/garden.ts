@@ -1,5 +1,6 @@
 // Read-side helpers over the in-memory GardenData.
 
+import { irrigationFor, irrigationZones, zoneFor, type Zone } from "./irrigation.ts";
 import { rainReaches, rainyDays } from "./weather/rain.ts";
 import { careSchedule, sortCare, type CareItem } from "./schedule.ts";
 import type { Condition } from "./model.ts";
@@ -11,6 +12,8 @@ export type PlantingView = Planting & {
   trayName: string | null;
   species: Species;
   care: CareItem[];
+  /** The irrigation zone that waters its bed, if any. */
+  zone: Zone | null;
 };
 
 export function cellRange(cells: string[]): string {
@@ -73,11 +76,14 @@ export function plantingViews(data: GardenData, today: string): PlantingView[] {
   const species = new Map(data.species.map((s) => [s.id, s]));
   const trays = new Map(data.trays.map((t) => [t.id, t]));
   const rain = rainyDays(data.rain ?? [], today);
+  const zones = irrigationZones(data);
   return data.plantings
     .filter((p) => species.has(p.speciesId))
     .map((p) => {
       const s = species.get(p.speciesId)!;
       const tray = p.trayId ? trays.get(p.trayId) : undefined;
+      const outdoors = rainReaches(p, data);
+      const irrigation = irrigationFor(zones, data.irrigation ?? [], p.trayId, today);
       const care = careSchedule(
         {
           status: p.status,
@@ -87,11 +93,13 @@ export function plantingViews(data: GardenData, today: string): PlantingView[] {
           waterEveryDays: s.waterEveryDays,
           milestones: s.milestones,
           events: data.events.filter((e) => e.plantingId === p.id),
-          rain: rain.length && rainReaches(p, data) ? rain : undefined,
+          rain: rain.length && outdoors ? rain : undefined,
+          irrigation: irrigation.length ? irrigation : undefined,
+          outdoors,
         },
         today,
       );
-      return { ...p, name: s.commonName, variety: s.variety, trayName: tray?.name ?? null, species: s, care: sortCare(care) };
+      return { ...p, name: s.commonName, variety: s.variety, trayName: tray?.name ?? null, species: s, care: sortCare(care), zone: zoneFor(zones, p.trayId) };
     })
     .sort((a, b) => {
       const ta = a.trayId ? (trays.get(a.trayId)?.position ?? 99) : 99;

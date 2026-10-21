@@ -18,6 +18,8 @@ export type CareItem = {
   doneOn?: string;
   /** For watering: the rain that counted as the last watering. */
   rainedOn?: string;
+  /** For watering: the irrigation run that counted as the last watering. */
+  irrigatedOn?: string;
 };
 
 export type ScheduleInput = {
@@ -30,6 +32,10 @@ export type ScheduleInput = {
   events: { type: string; date: string }[];
   /** Rainy days that reached this planting (outdoors only), oldest first; they count as watering. */
   rain?: { date: string; inches: number; source: string }[];
+  /** Days a sprinkler or drip zone watered this planting's bed, oldest first; they count as watering too. */
+  irrigation?: { date: string; label: string }[];
+  /** In a bed outdoors rather than a tray: seedlings are kept moist, not misted. */
+  outdoors?: boolean;
 };
 
 const ACTIVE: PlantingStatus[] = ["sown", "sprouted", "growing", "transplanted", "harvesting"];
@@ -67,19 +73,27 @@ export function careSchedule(p: ScheduleInput, today: string): CareItem[] {
 
   // Watering
   const interval = wateringInterval(p);
+  // Whatever watered it last: a hand watering, the sprinklers, or rain.
   const byHand = lastEvent(p.events, "watered");
   const rained = p.rain?.filter((r) => r.date <= today).at(-1) ?? null;
-  const rainedLast = rained && (!byHand || rained.date >= byHand) ? rained : null;
-  const lastWater = rainedLast ? rainedLast.date : byHand;
+  const irrigated = p.irrigation?.filter((r) => r.date <= today).at(-1) ?? null;
+  const latest = [byHand ?? "", irrigated?.date ?? "", rained?.date ?? ""].sort().at(-1)!;
+  const irrigatedLast = irrigated && irrigated.date === latest && byHand !== latest ? irrigated : null;
+  const rainedLast = rained && rained.date === latest && byHand !== latest && !irrigatedLast ? rained : null;
+  const lastWater = latest || null;
   const next = lastWater ? addDays(lastWater, interval) : today;
   const cadence = interval === 1 ? "Daily" : `Every ${interval} days`;
+  const when = (date: string) => (date === today ? "today" : `on ${formatDate(date)}`);
   items.push({
     key: "water",
-    title: SEEDLING.includes(p.status) ? "Keep moist (mist)" : "Water",
-    detail: rainedLast
-      ? `${cadence} · ${rainedLast.source === "expected" ? "rain expected" : "rained"} ${rainedLast.date === today ? "today" : `on ${formatDate(rainedLast.date)}`} (${rainedLast.inches.toFixed(2)} in), which counts`
-      : cadence,
+    title: SEEDLING.includes(p.status) ? (p.outdoors ? "Keep moist" : "Keep moist (mist)") : "Water",
+    detail: irrigatedLast
+      ? `${cadence} · ${irrigatedLast.label} ran ${when(irrigatedLast.date)}, which counts`
+      : rainedLast
+        ? `${cadence} · ${rainedLast.source === "expected" ? "rain expected" : "rained"} ${when(rainedLast.date)} (${rainedLast.inches.toFixed(2)} in), which counts`
+        : cadence,
     rainedOn: rainedLast?.date,
+    irrigatedOn: irrigatedLast?.date,
     event: "watered",
     start: next,
     end: next,

@@ -11,6 +11,15 @@ export function todayIn(timeZone: string, now = new Date()): string {
   }
 }
 
+/** The time of day in a time zone, HH:MM on a 24-hour clock. */
+export function timeIn(timeZone: string, now = new Date()): string {
+  try {
+    return new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now);
+  } catch {
+    return now.toISOString().slice(11, 16);
+  }
+}
+
 const toMs = (d: string) => Date.parse(`${d}T00:00:00Z`);
 
 export function addDays(date: string, days: number): string {

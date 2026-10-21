@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router";
-import { TrayGrid } from "@/components/ui";
-import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, updateGarden, updateMapEntity } from "@/lib/actions";
+import { ActionButton, TrayGrid } from "@/components/ui";
+import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, setZone, setZoneRun, updateGarden, updateMapEntity } from "@/lib/actions";
+import { describeTimer, IRRIGATION_KINDS, irrigationZones, lastRun, ranWhen, zoneLabel, zoneOf } from "@/lib/irrigation";
 import { coverPhotos, plantingViews, sortedSpecies, sortedTrays } from "@/lib/garden";
 import { useGarden } from "@/lib/GardenContext";
 import {
@@ -34,7 +35,7 @@ import { CITIES, CITY_REGIONS, nearestCity, parseLatLng } from "@/lib/map/places
 import { exportIfc, fileSlug } from "@/lib/map/ifc";
 import { DOG_COATS } from "@/lib/map/pets";
 import { newId } from "@/lib/store";
-import type { Pet } from "@/lib/types";
+import type { Pet, ZoneTimer } from "@/lib/types";
 import { downloadFile } from "@/lib/download";
 import { entityShadow, gardenLocation, shadowShape, sunFrom, sunGroundDirection, sunPosition, type SunPosition } from "@/lib/map/sun";
 
@@ -1113,6 +1114,8 @@ function EntityPanel({
 
       {def.openings && <OpeningsEditor e={e} selected={openingSel} onSelect={setOpeningSel} />}
 
+      {IRRIGATION_KINDS.has(e.kind) && <ZonePanel e={e} />}
+
       {def.links?.includes("tray") && (
         <section className="card">
           <h3>Planter</h3>
@@ -1172,6 +1175,75 @@ function EntityPanel({
         </div>
       </section>
     </>
+  );
+}
+
+const DAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/** The zone a sprinkler, drip line or valve is on: the beds it waters, its name and timer, and a way to say it ran. */
+function ZonePanel({ e }: { e: MapEntity }) {
+  const { data, today, act } = useGarden();
+  const zone = irrigationZones(data).find((z) => z.zone === zoneOf(e));
+  if (!zone) return null;
+  const timer = zone.settings.timer;
+  const draft: ZoneTimer = timer ?? { days: [], at: "06:00", since: today, paused: false };
+  const setTimer = (patch: Partial<ZoneTimer>) => act((ctx) => setZone(ctx, zone.zone, { timer: { ...draft, ...patch } }));
+  const last = lastRun(data.irrigation ?? [], zone.zone, today);
+  const hint =
+    e.kind === "sprinkler"
+      ? "move it so its spray covers most of a bed, or widen its spray radius."
+      : e.kind === "drip-line"
+        ? "run it through a bed, or pick the bed under Belongs to."
+        : `pick a bed under Belongs to, or add sprinklers or drip lines on zone ${zone.zone}.`;
+  return (
+    <section className="card">
+      <h3>💦 {zoneLabel(zone)}</h3>
+      <p className="small">
+        {zone.beds.length ? (
+          <>Waters {zone.beds.map((b) => b.name).join(", ")}. A run counts as watering for every planting in them.</>
+        ) : (
+          <span className="muted">Doesn&rsquo;t water any beds yet: {hint}</span>
+        )}
+      </p>
+      <label className="field">
+        <span>Zone name</span>
+        <TextField value={zone.settings.name ?? ""} placeholder={`Zone ${zone.zone}`} onCommit={(name) => act((ctx) => setZone(ctx, zone.zone, { name: name.trim() || null }))} />
+      </label>
+      <div className="field">
+        <span>Timer runs on</span>
+        <div className="zone-days">
+          {DAY_LETTERS.map((d, i) => (
+            <button
+              key={i}
+              className={`small ${draft.days.includes(i) ? "on" : ""}`}
+              aria-pressed={draft.days.includes(i)}
+              aria-label={DAY_NAMES[i]}
+              title={DAY_NAMES[i]}
+              onClick={() => setTimer({ days: draft.days.includes(i) ? draft.days.filter((x) => x !== i) : [...draft.days, i].sort() })}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="row">
+        <label className="field">
+          <span>Starts at</span>
+          <input type="time" value={draft.at} onChange={(ev) => ev.target.value && setTimer({ at: ev.target.value })} />
+        </label>
+        {timer && timer.days.length > 0 && (
+          <label className="check">
+            <input type="checkbox" checked={timer.paused} onChange={(ev) => setTimer({ paused: ev.target.checked })} /> Paused
+          </label>
+        )}
+      </div>
+      <p className="small muted">
+        {describeTimer(timer)}
+        {last ? ` · last ran ${ranWhen(last.date, today)}${last.source === "timer" ? " (timer)" : ""}` : ""}. Timer runs are recorded on their own. Ran it by hand? Tap Ran today, here or on the Today page.
+      </p>
+      <ActionButton className="small" onClick={() => act((ctx) => setZoneRun(ctx, zone.zone, today, "manual"))}>💦 Ran today</ActionButton>
+    </section>
   );
 }
 
