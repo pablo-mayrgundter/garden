@@ -28,7 +28,7 @@ The app tracks:
 - Outdoor beds are planted in rows: a planting there has a count (e.g. 18 beets), and its plants are numbered 1…count along the row.
 - A care log of events (watered, sprouted, thinned, pinched, fertilized, potted_up, transplanted, harvested, observed, other), notes, photos, and to-do tasks. "observed" records a check on plants with a condition (healthy, pests, disease, nutrients, water, weeds, damage, missing, other), for the whole planting or specific numbered plants.
 - A garden map of the whole lot (house, front and back yards): boxes in feet with x east from the lot's west edge, y south from its north edge, w east–west, d north–south, h tall. Each has a kind (raised-bed, fence, fruit-tree, spigot, sprinkler, gantry, …); beds can link to a planter, whose rows are drawn on them.
-- Irrigation zones: sprinklers, drip lines and valves on the map each belong to a zone (their "zone" setting). A zone waters the beds most of which its sprinklers' spray radius covers, that its drip lines run through, or that its drip lines and valves are linked to. A zone can have a timer (days and start time); timer runs are recorded automatically, and people can say it ran. Each run counts as watering for every planting in the zone's beds, the same way rain does.
+- Irrigation zones: sprinklers, sprinkler lines (small sprinklers on stakes every 18 in along a hose), drip lines and valves on the map each belong to a zone (their "zone" setting). A zone waters the beds most of which its sprinklers' spray radius covers, that its drip lines and sprinkler lines run through, or that they and valves are linked to. A line's span (its rectangle's width) is how wide it waters; a sprinkler line's heads throw to the span's edges unless a radius is set. A zone can have a timer (days and start time); timer runs are recorded automatically, and people can say it ran. Each run counts as watering for every planting in the zone's beds, the same way rain does.
 - A computed care schedule per planting: daily misting while seedlings are in a planter, the germination window from the packet, and packet-based milestones (thinning, first feeding, pinching, transplanting, harvest). Logging the matching event completes a milestone.
 
 Each user message starts with an <app_context> block describing today's date, the page the user is looking at, and current garden data. Treat it as the source of truth about the garden; it reflects the data at the moment the message was sent. Planting, planter and photo IDs appear there in brackets, like [k3x9p2]. Photos can be inspected with view_photo. When a photo is attached, look at it carefully — seedling color, legginess, damping off, mold, overcrowding — and say what you see.
@@ -289,7 +289,11 @@ export const TOOL_SPECS: ToolSpec[] = [
           properties: {
             op: { type: "string", enum: ["add", "update", "remove"] },
             id: { type: "string", description: "Map item ID for update/remove; empty string for add." },
-            kind: { type: "string", enum: ["", ...KINDS.map((k) => k.kind)], description: "Kind for add; empty string otherwise." },
+            kind: {
+              type: "string",
+              enum: ["", ...KINDS.map((k) => k.kind)],
+              description: "Kind for add. For update, a new kind changes what the item is in place (e.g. a drip-line into a sprinkler-line), keeping its position, size and zone. Empty string otherwise.",
+            },
             name: { type: "string", description: "New name, or empty string to keep / use the default." },
             x: { type: ["number", "null"] },
             y: { type: ["number", "null"] },
@@ -465,6 +469,13 @@ export async function runTool(name: string, raw: unknown, deps: AssistantDeps): 
           if (c.zone.trim()) props.zone = c.zone.trim();
           if (c.radius != null) props.radius = Math.max(0, c.radius);
           if (Object.keys(props).length) patch.props = { ...(target?.props ?? kindDef(c.kind).defaults.props ?? {}), ...props };
+          if (c.op === "update" && c.kind && c.kind !== target!.kind) {
+            // What it is changes; where it is doesn't. The new kind's settings, keeping its zone.
+            const def = kindDef(c.kind).defaults;
+            patch.kind = c.kind;
+            if (c.h == null) patch.h = def.h;
+            patch.props = { ...(def.props ?? {}), ...(target!.props.zone != null ? { zone: target!.props.zone } : {}), ...(patch.props ?? {}) };
+          }
           if (c.op === "remove") {
             await deps.act((ctx) => deleteMapEntity(ctx, target!.id));
             done.push(`removed ${target!.name}`);

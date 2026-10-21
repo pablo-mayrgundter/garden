@@ -7,6 +7,8 @@
 //
 // What a zone waters, worked out from the map:
 // - a sprinkler: the beds most of which lie inside its spray radius;
+// - a sprinkler line (small sprinklers on stakes along a hose): the beds it
+//   runs through or most of which its heads' sprays cover, or the one it's linked to;
 // - a drip line: the bed it's linked to, else the beds it runs through;
 // - a valve: the bed it's linked to (it's mostly there to name the zone and show where the controls are).
 // Timer runs are recorded as they come due (IrrigationSync), one record per
@@ -20,7 +22,11 @@ import { turn, type Vec2 } from "./map/geometry.ts";
 import type { MapEntity } from "./map/model.ts";
 import type { GardenData, IrrigationRun, ZoneSettings, ZoneTimer } from "./types.ts";
 
-export const IRRIGATION_KINDS = new Set(["sprinkler", "drip-line", "valve"]);
+export const IRRIGATION_KINDS = new Set(["sprinkler", "sprinkler-line", "drip-line", "valve"]);
+/** Irrigation laid along a line: drawn on the beds it runs over. */
+export const WATER_LINES = new Set(["drip-line", "sprinkler-line"]);
+/** How long a timer runs when it doesn't say. */
+export const DEFAULT_RUN_MINUTES = 20;
 /** Map kinds a zone can water: what holds plantings outdoors. */
 const BED_KINDS = new Set(["raised-bed", "in-ground-bed", "herb-garden", "container"]);
 /** How far back timer runs are filled in. */
@@ -61,7 +67,32 @@ const inside = (e: MapEntity, [x, y]: Vec2): boolean => {
 /** A 3 × 3 grid of points over an entity's footprint (corners, edge middles, center). */
 const samples = (e: MapEntity): Vec2[] => [0, 0.5, 1].flatMap((fx) => [0, 0.5, 1].map((fy) => toLot(e, e.x + fx * e.w, e.y + fy * e.d)));
 
-/** The beds a sprinkler, drip line or valve waters. */
+/** Where the small sprinklers on a sprinkler line stand: one every `spacing` inches along it, starting half a spacing in. */
+export function sprinklerHeads(e: MapEntity): Vec2[] {
+  const spacing = Math.max(0.25, Number(e.props.spacing ?? 18) / 12);
+  const alongX = e.w >= e.d;
+  const len = alongX ? e.w : e.d;
+  const n = Math.max(1, Math.floor(len / spacing + 0.5));
+  const step = len / n;
+  return Array.from({ length: n }, (_, i) => (alongX ? toLot(e, e.x + (i + 0.5) * step, e.y + e.d / 2) : toLot(e, e.x + e.w / 2, e.y + (i + 0.5) * step)));
+}
+
+/** How far past the span's edges the heads are set to throw, so neighbors overlap and the whole bed soaks. */
+export const SPRAY_OVERAGE = 0.15;
+
+/**
+ * How far each head of a sprinkler line throws: as set, or else tuned to the
+ * line's span (the rectangle it's drawn as) — reaching its long edges from
+ * the middle, a little past them — and at least far enough to meet the next head.
+ */
+export function sprayRadius(e: Pick<MapEntity, "w" | "d" | "props">): number {
+  const set = e.props.radius;
+  if (set != null && set !== "") return Number(set);
+  const spacing = Number(e.props.spacing ?? 18) / 12;
+  return Math.round(Math.max(spacing / 2, Math.min(e.w, e.d) / 2) * (1 + SPRAY_OVERAGE) * 100) / 100;
+}
+
+/** The beds a sprinkler, sprinkler line, drip line or valve waters. */
 export function bedsWatered(head: MapEntity, entities: MapEntity[]): MapEntity[] {
   const beds = entities.filter((e) => BED_KINDS.has(e.kind));
   const linked = head.links.entityId ? beds.filter((b) => b.id === head.links.entityId) : [];
@@ -72,6 +103,12 @@ export function bedsWatered(head: MapEntity, entities: MapEntity[]): MapEntity[]
     const alongX = head.w >= head.d;
     const line = Array.from({ length: 9 }, (_, i) => (alongX ? toLot(head, head.x + (head.w * i) / 8, head.y + head.d / 2) : toLot(head, head.x + head.w / 2, head.y + (head.d * i) / 8)));
     return beds.filter((b) => line.some((p) => inside(b, p)));
+  }
+  if (head.kind === "sprinkler-line") {
+    if (linked.length) return linked;
+    const heads = sprinklerHeads(head);
+    const r = sprayRadius(head);
+    return beds.filter((b) => heads.some((p) => inside(b, p)) || samples(b).filter(([x, y]) => heads.some(([hx, hy]) => Math.hypot(x - hx, y - hy) <= r)).length >= 5);
   }
   if (head.kind === "sprinkler") {
     const r = Number(head.props.radius ?? 8);
@@ -97,7 +134,8 @@ export function irrigationZones(data: Pick<GardenData, "mapEntities" | "garden">
         .sort((a, b) => a.head.name.localeCompare(b.head.name, undefined, { numeric: true }));
       const beds = [...new Map(lines.flatMap((l) => l.beds).map((b) => [b.id, b])).values()];
       const kinds = new Set(heads.map((h) => h.kind));
-      const what = kinds.has("sprinkler") && kinds.has("drip-line") ? "sprinklers and drip lines" : kinds.has("sprinkler") ? "sprinklers" : kinds.has("drip-line") ? "drip lines" : "irrigation";
+      const spray = kinds.has("sprinkler") || kinds.has("sprinkler-line");
+      const what = spray && kinds.has("drip-line") ? "sprinklers and drip lines" : spray ? "sprinklers" : kinds.has("drip-line") ? "drip lines" : "irrigation";
       return {
         zone,
         name: settings.name?.trim() || `Zone ${zone}`,
@@ -182,13 +220,34 @@ export function formatTime(at: string): string {
   return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
 }
 
+const minutesOf = (hhmm: string) => {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+};
+
+/**
+ * The zones running at a moment (a date and HH:MM time in the garden): those
+ * whose timer started on that day no more than its run time ago, unless that
+ * day's run was marked skipped.
+ */
+export function zonesRunning(zones: Zone[], runs: IrrigationRun[], date: string, time: string): Zone[] {
+  const now = minutesOf(time);
+  return zones.filter((z) => {
+    const t = z.settings.timer;
+    if (!t || !runsOn(t, date)) return false;
+    const start = minutesOf(t.at);
+    if (now < start || now >= start + (t.minutes ?? DEFAULT_RUN_MINUTES)) return false;
+    return runs.find((r) => r.id === runId(z.zone, date))?.source !== "skipped";
+  });
+}
+
 /** "Daily at 6:00 AM", "Mon, Wed, Fri at 6:00 AM", "Paused", or "No timer". */
 export function describeTimer(t: ZoneTimer | null): string {
   if (!t || !t.days.length) return "No timer";
   if (t.paused) return "Timer paused";
   const days = [...t.days].sort();
   const when = days.length === 7 ? "Daily" : days.join() === "1,2,3,4,5" ? "Weekdays" : days.join() === "0,6" ? "Weekends" : days.map((d) => DAY_NAMES[d]).join(", ");
-  return `${when} at ${formatTime(t.at)}`;
+  return `${when} at ${formatTime(t.at)} for ${t.minutes ?? DEFAULT_RUN_MINUTES} min`;
 }
 
 /** When a whole zone last ran (or, given a line, that line on its own). */

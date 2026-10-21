@@ -451,8 +451,13 @@ button.plant-dot:hover { filter: brightness(1.08); background: radial-gradient(c
 @keyframes wag { from { transform: rotate(-10deg); } to { transform: rotate(14deg); } }
 .critters .woof { animation: woof 0.5s steps(1) infinite; }
 @keyframes woof { 0%, 100% { opacity: 1; } 50% { opacity: 0.15; } }
+/* Water flowing out along each jet of a sprinkler's spray; drip emitters pulse. */
+.map-svg .spray-jet { fill: none; stroke: #3d9ad1; stroke-opacity: 0.85; stroke-width: 1.4; stroke-linecap: round; stroke-dasharray: 0.55 0.95; vector-effect: non-scaling-stroke; animation: spray 0.5s linear infinite; }
+@keyframes spray { to { stroke-dashoffset: -1.5; } }
+.map-svg .dripping { transform-box: fill-box; transform-origin: 50% 50%; animation: drip 1s ease-in-out infinite; }
+@keyframes drip { 0%, 100% { transform: scale(1); fill-opacity: 1; } 50% { transform: scale(1.9); fill-opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {
-  .map-svg .canopy, .critters *, .weather-fx * { animation: none !important; }
+  .map-svg .canopy, .critters *, .weather-fx *, .map-svg .spray-jet, .map-svg .dripping { animation: none !important; }
 }
 
 /* ---------- Weather on the map ---------- */

@@ -6,6 +6,7 @@
 
 import type { Layer, MapEntity } from "./model.ts";
 import { houseStories } from "./openings.ts";
+import { sprayRadius } from "../irrigation.ts";
 
 export type FieldDef = {
   key: string;
@@ -248,6 +249,24 @@ export const KINDS: KindDef[] = [
       { key: "radius", label: "Spray radius", type: "number", unit: "ft", step: 0.5, min: 0 },
       { key: "zone", label: "Zone", type: "text" },
     ],
+  },
+  {
+    kind: "sprinkler-line",
+    label: "Sprinkler line",
+    icon: "⛲",
+    layer: "irrigation",
+    flat: true,
+    resizable: true,
+    line: true,
+    description:
+      "A hose with small sprinklers on stakes along it (one every 18 in). Drag its ends along a bed and its sides out to the span it waters: the heads throw to the span's edges, a little past.",
+    defaults: { name: "Sprinkler line", w: 8, d: 3, h: 0.75, props: { zone: "1", spacing: 18 } },
+    fields: [
+      { key: "spacing", label: "Heads every", type: "number", unit: "in", step: 1, min: 4 },
+      { key: "radius", label: "Spray radius", type: "number", unit: "ft", step: 0.25, min: 0, value: (e) => sprayRadius(e) },
+      { key: "zone", label: "Zone", type: "text" },
+    ],
+    links: ["entity"],
   },
   {
     kind: "drip-line",
