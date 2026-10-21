@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { Link, useSearchParams } from "react-router";
 import { ActionButton, TrayGrid } from "@/components/ui";
 import { addMapEntity, applySiteTemplate, createPlanterForEntity, deleteMapEntity, setSite, setZone, setZoneRun, updateGarden, updateMapEntity } from "@/lib/actions";
-import { bedsWatered, describeTimer, IRRIGATION_KINDS, irrigationZones, lastRun, ranWhen, runId, zoneLabel, zoneOf } from "@/lib/irrigation";
+import { bedsWatered, DEFAULT_RUN_MINUTES, describeTimer, IRRIGATION_KINDS, irrigationZones, lastRun, ranWhen, runId, WATER_LINES, zoneLabel, zoneOf, zonesRunning } from "@/lib/irrigation";
+import { timeIn, todayIn } from "@/lib/dates";
 import { coverPhotos, plantingViews, sortedSpecies, sortedTrays } from "@/lib/garden";
 import { useGarden } from "@/lib/GardenContext";
 import {
@@ -48,6 +49,7 @@ type Drag =
   | { type: "pan"; sx: number; sy: number; view: View; moved: boolean; selectId: string | null }
   | { type: "move" | "resize" | "rotate"; sx: number; sy: number; entity: MapEntity; moved: boolean }
   | { type: "end"; sx: number; sy: number; entity: MapEntity; end: 0 | 1; moved: boolean }
+  | { type: "span"; sx: number; sy: number; entity: MapEntity; moved: boolean }
   | { type: "compass"; sx: number; sy: number; moved: boolean }
   | { type: "opening"; sx: number; sy: number; entity: MapEntity; openingId: string; moved: boolean };
 
@@ -175,7 +177,7 @@ export function MapPage() {
   const entities = useMemo(() => {
     const list = data.mapEntities.map((e) => (draft && draft.id === e.id ? { ...e, ...draft } : e)).filter((e) => !hidden.has(kindDef(e.kind).layer));
     // A drip line over a bed is drawn on the bed (right after it), not under it on the ground.
-    const dripBeds = new Map(list.filter((e) => e.kind === "drip-line").map((e) => [e.id, bedsWatered(e, list)]));
+    const dripBeds = new Map(list.filter((e) => WATER_LINES.has(e.kind)).map((e) => [e.id, bedsWatered(e, list)]));
     const overBed = (e: MapEntity) => (dripBeds.get(e.id)?.length ?? 0) > 0;
     const flat = list.filter((e) => kindDef(e.kind).flat && !overBed(e)).sort((a, b) => LAYERS[kindDef(a.kind).layer].order - LAYERS[kindDef(b.kind).layer].order || b.w * b.d - a.w * a.d);
     const ordered = paintOrder(pj, list.filter((e) => !kindDef(e.kind).flat));
@@ -202,6 +204,25 @@ export function MapPage() {
     return () => clearInterval(t);
   }, [clock.live]);
   const when = new Date(clock.at);
+
+  // ---------- Watering ----------
+
+  /** Sprinklers and lines shown spraying for a little while after they're run or watched from the Watering panel. */
+  const [watching, setWatching] = useState<{ ids: string[]; until: number } | null>(null);
+  useEffect(() => {
+    if (!watching) return;
+    const t = setTimeout(() => setWatching(null), Math.max(0, watching.until - Date.now()));
+    return () => clearTimeout(t);
+  }, [watching]);
+  const watch = useCallback((ids: string[]) => setWatching({ ids, until: Date.now() + 20_000 }), []);
+  // What's running at the map's clock: zones whose timer is on, live or scrubbed to.
+  const spraying = useMemo(() => {
+    const zones = irrigationZones(data);
+    const tz = data.garden.timezone;
+    const on = new Set(zonesRunning(zones, data.irrigation ?? [], todayIn(tz, when), timeIn(tz, when)).flatMap((z) => z.heads.map((h) => h.id)));
+    for (const id of watching?.ids ?? []) on.add(id);
+    return on;
+  }, [data, watching, clock.at]); // eslint-disable-line react-hooks/exhaustive-deps
   const where = gardenLocation(site, when);
   const sun = sunPosition(when, where.lat, where.lon);
 
@@ -272,6 +293,8 @@ export function MapPage() {
       startDrag(ev, { type: "compass", sx: pt.x, sy: pt.y, moved: false });
     } else if ((handle === "resize" || handle === "rotate") && selected) {
       startDrag(ev, { type: handle, sx: pt.x, sy: pt.y, entity: selected, moved: false });
+    } else if (handle === "span" && selected) {
+      startDrag(ev, { type: "span", sx: pt.x, sy: pt.y, entity: selected, moved: false });
     } else if ((handle === "end-0" || handle === "end-1") && selected) {
       startDrag(ev, { type: "end", sx: pt.x, sy: pt.y, entity: selected, end: handle === "end-0" ? 0 : 1, moved: false });
     } else if (id && id === selectedId && selected) {
@@ -334,7 +357,14 @@ export function MapPage() {
     const [wx, wy] = unprojectDelta(pj, dx / view.zoom, dy / view.zoom);
     const e = d.entity;
     const g = site.gridFt;
-    if (d.type === "end") {
+    if (d.type === "span") {
+      // The span (how wide the line waters) grows and shrinks evenly about the line, its ends staying put.
+      const [a, b] = lineEnds(e);
+      const [gx, gy] = pj.unproject(...toScene(pt.x, pt.y));
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const off = Math.abs(((gx - a[0]) * (b[1] - a[1]) - (gy - a[1]) * (b[0] - a[0])) / len);
+      setDraft({ id: e.id, ...lineFromEnds(a, b, Math.max(0.1, snap(off * 2, Math.max(g, 0.25)))) });
+    } else if (d.type === "end") {
       // One end follows the pointer (on the grid); the other stays put.
       const ends = lineEnds(e);
       const moving = ends[d.end];
@@ -443,7 +473,7 @@ export function MapPage() {
   };
 
   const empty = data.mapEntities.length === 0;
-  const ctx = { pj, data, today, zoom: view.zoom || 1, sunShadows: shadows && sun.altitude > 0, selectedOpening: openingSel };
+  const ctx = { pj, data, today, zoom: view.zoom || 1, sunShadows: shadows && sun.altitude > 0, selectedOpening: openingSel, spraying };
   // Night: shade the whole scene, fading in through twilight.
   const night = Math.min(1, Math.max(0, -sun.altitude / 8)) * 0.42;
   const transform = `translate(${size.w / 2 - view.cx * view.zoom} ${size.h / 2 - view.cy * view.zoom}) scale(${view.zoom || 1})`;
@@ -565,7 +595,7 @@ export function MapPage() {
             <EntityPanel key={selected.id} e={selected} onClose={() => select(null)} onSelect={select} openingSel={openingSel} setOpeningSel={setOpeningSel} />
           ) : (
             <>
-              {!empty && <WateringPanel onSelect={select} onAdd={add} />}
+              {!empty && <WateringPanel onSelect={select} onAdd={add} onWatch={watch} />}
               <section className="card">
                 <h3>Add to the map</h3>
                 <p className="small muted">Added in the middle of the view; drag it into place.</p>
@@ -655,6 +685,22 @@ function Selection({ pj: base, e, zoom, resizable, openingSel }: { pj: Projector
     <g pointerEvents="none">
       <path d={ring(e.z)} fill={PAL.accent} fillOpacity={0.12} stroke={PAL.accent} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeDasharray="6 3" />
       {pj.mode === "iso" && e.h > 0.5 && <path d={ring(e.z + e.h)} fill="none" stroke={PAL.accent} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+      {line && WATER_LINES.has(e.kind) && (() => {
+        // A square knob on the side, for how wide a span the line waters.
+        const [a, b] = lineEnds(e);
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+        const half = Math.min(e.w, e.d) / 2;
+        const [sx, sy] = base.p((a[0] + b[0]) / 2 - ((b[1] - a[1]) / len) * half, (a[1] + b[1]) / 2 + ((b[0] - a[0]) / len) * half, e.z);
+        const r = 8 / zoom;
+        return (
+          <g data-handle="span" pointerEvents="all" style={{ cursor: "ew-resize" }}>
+            <title>Drag to set how wide a span it waters</title>
+            <rect x={sx - r - 3 / zoom} y={sy - r - 3 / zoom} width={(r + 3 / zoom) * 2} height={(r + 3 / zoom) * 2} rx={3 / zoom} fill="#fff" fillOpacity={0.9} />
+            <rect x={sx - r} y={sy - r} width={r * 2} height={r * 2} rx={2 / zoom} fill="#fff" stroke={PAL.accent} strokeWidth={3} vectorEffect="non-scaling-stroke" />
+            <text x={sx} y={sy} fontSize={11 / zoom} textAnchor="middle" dominantBaseline="central" fill={PAL.accent} fontWeight={700}>↔</text>
+          </g>
+        );
+      })()}
       {line &&
         lineEnds(e).map(([x, y], i) => {
           // The ends are on the lot already turned, so through the plain projector.
@@ -1244,6 +1290,23 @@ function ZonePanel({ e }: { e: MapEntity }) {
   return (
     <section className="card">
       <h3>💦 {zoneLabel(zone)}</h3>
+      {WATER_LINES.has(e.kind) && (
+        <label className="field">
+          <span>What it is</span>
+          <select
+            value={e.kind}
+            onChange={(ev) => {
+              // Same place, span and zone; the new kind's settings.
+              const kind = ev.target.value;
+              const def = kindDef(kind).defaults;
+              act((ctx) => updateMapEntity(ctx, e.id, { kind, h: def.h, props: { ...(def.props ?? {}), zone: e.props.zone ?? "1" } }));
+            }}
+          >
+            <option value="drip-line">〰️ Drip line: tubing with emitters</option>
+            <option value="sprinkler-line">⛲ Sprinkler line: small sprinklers on stakes along a hose</option>
+          </select>
+        </label>
+      )}
       <p className="small">
         {zone.beds.length ? (
           <>Waters {zone.beds.map((b) => b.name).join(", ")}. A run counts as watering for every planting in them.</>
@@ -1277,6 +1340,7 @@ function ZonePanel({ e }: { e: MapEntity }) {
           <span>Starts at</span>
           <input type="time" value={draft.at} onChange={(ev) => ev.target.value && setTimer({ at: ev.target.value })} />
         </label>
+        <NumField label="Runs for" value={draft.minutes ?? DEFAULT_RUN_MINUTES} min={1} step={5} unit="min" onCommit={(minutes) => setTimer({ minutes: Math.max(1, Math.round(minutes)) })} />
         {timer && timer.days.length > 0 && (
           <label className="check">
             <input type="checkbox" checked={timer.paused} onChange={(ev) => setTimer({ paused: ev.target.checked })} /> Paused
@@ -1427,7 +1491,7 @@ function LocationPicker({ site, save }: { site: Site; save: (patch: Partial<Site
  * whole zone at once, or say just one line ran; either way it counts as
  * watering for every planting in the beds it reaches.
  */
-function WateringPanel({ onSelect, onAdd }: { onSelect: (id: string) => void; onAdd: (kind: string) => void }) {
+function WateringPanel({ onSelect, onAdd, onWatch }: { onSelect: (id: string) => void; onAdd: (kind: string) => void; onWatch: (ids: string[]) => void }) {
   const { data, today, act } = useGarden();
   const zones = irrigationZones(data);
   const runs = data.irrigation ?? [];
@@ -1437,7 +1501,7 @@ function WateringPanel({ onSelect, onAdd }: { onSelect: (id: string) => void; on
       <h3>💧 Watering</h3>
       {zones.length === 0 && (
         <p className="small muted">
-          No watering system on the map yet. Add a drip line and drag its ends across a bed, or put a sprinkler between beds. Lines and sprinklers on the same zone run together.
+          No watering system on the map yet. Add a sprinkler line or drip line and drag its ends along a bed (and its ↔ knob out to the span it waters), or put a sprinkler between beds. Everything on the same zone runs together.
         </p>
       )}
       {zones.map((z) => {
@@ -1458,13 +1522,16 @@ function WateringPanel({ onSelect, onAdd }: { onSelect: (id: string) => void; on
                   ✓ Ran today
                 </ActionButton>
               ) : z.beds.length ? (
-                <ActionButton className="small" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, "manual"))}>
+                <ActionButton className="small" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, "manual")).then(() => onWatch(z.heads.map((h) => h.id)))}>
                   💦 Run whole zone
                 </ActionButton>
               ) : (
                 <span className="small muted">reaches no beds</span>
               )}
             </div>
+            <button className="ghost small" title="Show it running on the map for a few seconds (records nothing)" onClick={() => onWatch(z.heads.map((h) => h.id))}>
+              ▶ Watch it run
+            </button>
             <ul className="zone-lines">
               {z.lines.map((l) => {
                 const lineRan = ran(z.zone, l.head.id);
@@ -1483,7 +1550,7 @@ function WateringPanel({ onSelect, onAdd }: { onSelect: (id: string) => void; on
                     ) : lineRan ? (
                       <ActionButton className="ghost small" title="Undo" onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, null, l.head.id))}>✓ Ran</ActionButton>
                     ) : (
-                      <ActionButton className="small" title={`Just this one: waters ${l.beds.map((b) => b.name).join(", ")}`} onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, "manual", l.head.id))}>
+                      <ActionButton className="small" title={`Just this one: waters ${l.beds.map((b) => b.name).join(", ")}`} onClick={() => act((ctx) => setZoneRun(ctx, z.zone, today, "manual", l.head.id)).then(() => onWatch([l.head.id]))}>
                         💧 Ran
                       </ActionButton>
                     )}
@@ -1495,6 +1562,7 @@ function WateringPanel({ onSelect, onAdd }: { onSelect: (id: string) => void; on
         );
       })}
       <div className="row">
+        <button className="small" onClick={() => onAdd("sprinkler-line")}>⛲ Add a sprinkler line</button>
         <button className="small" onClick={() => onAdd("drip-line")}>〰️ Add a drip line</button>
         <button className="small" onClick={() => onAdd("sprinkler")}>💦 Add a sprinkler</button>
       </div>

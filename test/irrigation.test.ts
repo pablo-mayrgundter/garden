@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { recordRain, setZone, setZoneRun, type ActionCtx } from "../src/lib/actions.ts";
 import { runTool } from "../src/lib/assistant/core.ts";
 import { plantingViews } from "../src/lib/garden.ts";
-import { bedsWatered, describeTimer, irrigationFor, irrigationZones, nextRun, timerRunsDue, zoneFor } from "../src/lib/irrigation.ts";
+import { bedsWatered, describeTimer, irrigationFor, irrigationZones, lineArea, nextRun, sprayRadius, sprinklerHeads, timerRunsDue, zoneFor, zonesRunning } from "../src/lib/irrigation.ts";
 import { lineEnds, lineFromEnds } from "../src/lib/map/geometry.ts";
 import { kindDef } from "../src/lib/map/kinds.ts";
 import type { MapEntity } from "../src/lib/map/model.ts";
@@ -83,9 +83,9 @@ test("next run and the timer in words", () => {
   assert.equal(nextRun(daily("2026-10-01"), "2026-10-21", "06:30"), "2026-10-22");
   assert.equal(nextRun(daily("2026-10-01", { days: [1] }), "2026-10-21", "05:00"), "2026-10-26");
   assert.equal(nextRun(daily("2026-10-01", { paused: true }), "2026-10-21", "05:00"), null);
-  assert.equal(describeTimer(daily("x")), "Daily at 6:00 AM");
-  assert.equal(describeTimer(daily("x", { days: [1, 3, 5], at: "18:30" })), "Mon, Wed, Fri at 6:30 PM");
-  assert.equal(describeTimer(daily("x", { days: [1, 2, 3, 4, 5] })), "Weekdays at 6:00 AM");
+  assert.equal(describeTimer(daily("x")), "Daily at 6:00 AM for 20 min");
+  assert.equal(describeTimer(daily("x", { days: [1, 3, 5], at: "18:30", minutes: 45 })), "Mon, Wed, Fri at 6:30 PM for 45 min");
+  assert.equal(describeTimer(daily("x", { days: [1, 2, 3, 4, 5] })), "Weekdays at 6:00 AM for 20 min");
   assert.equal(describeTimer(daily("x", { paused: true })), "Timer paused");
   assert.equal(describeTimer(null), "No timer");
 });
@@ -225,4 +225,61 @@ test("one drip line run waters just its own bed; the whole zone waters them all"
   assert.ok(cache.irrigation.some((r) => r.id === "1:2026-10-20:drip1" && r.head === "drip1"));
   assert.ok((await runTool("irrigation_ran", { zone: "1", line_id: "nope", date: "", ran: "yes" }, deps)).isError);
   await db.close();
+});
+
+test("a sprinkler line: a head every 18 in, throwing to the edges of its span and a little past", () => {
+  // Along Bed 1 (x 8–16, y 10–14): 8 ft long, a 4 ft span.
+  const line = head("sprinkler-line", 8, 10, { w: 8, d: 4 });
+  const heads = sprinklerHeads(line);
+  assert.equal(heads.length, 5);
+  assert.deepEqual(heads.map(([x, y]) => [+x.toFixed(2), y]), [[8.8, 12], [10.4, 12], [12, 12], [13.6, 12], [15.2, 12]]);
+  assert.equal(sprayRadius(line), 2.3, "half the 4 ft span, 15% over");
+  assert.equal(sprayRadius({ ...line, d: 0.25 }), 0.86, "a narrow line still reaches the next head");
+  assert.equal(sprayRadius({ ...line, props: { ...line.props, radius: 5 } }), 5, "a set radius wins");
+  assert.deepEqual(bedsWatered(line, template).map((b) => b.name), ["Bed 1"]);
+  // Run alongside Bed 2's edge with a wide span: its spray covers most of the bed.
+  assert.deepEqual(bedsWatered(head("sprinkler-line", 18, 9, { w: 8, d: 6 }), template).map((b) => b.name), ["Bed 2"]);
+  // Turned, its heads turn with it.
+  const turned = { ...line, rot: 90 };
+  assert.ok(sprinklerHeads(turned).every(([x]) => Math.abs(x - 12) < 1e-9));
+});
+
+test("a zone is running from its timer's start for its run time, unless that day's run was skipped", () => {
+  const zones = zoneWith(daily("2026-10-01", { minutes: 20 }));
+  assert.equal(zonesRunning(zones, [], "2026-10-21", "05:59").length, 0);
+  assert.equal(zonesRunning(zones, [], "2026-10-21", "06:00").length, 1);
+  assert.equal(zonesRunning(zones, [], "2026-10-21", "06:19").length, 1);
+  assert.equal(zonesRunning(zones, [], "2026-10-21", "06:20").length, 0);
+  assert.equal(zonesRunning(zoneWith(daily("2026-10-01")), [], "2026-10-21", "06:19").length, 1, "20 minutes when not set");
+  assert.equal(zonesRunning(zones, [{ id: "1:2026-10-21", zone: "1", date: "2026-10-21", source: "skipped", updatedAt: "" }], "2026-10-21", "06:05").length, 0);
+  assert.equal(zonesRunning(zoneWith(daily("2026-10-01", { days: [1] })), [], "2026-10-21", "06:05").length, 0, "not its day");
+});
+
+test("the assistant turns a drip line into a sprinkler line in place", async () => {
+  const { db, today, ctx } = await garden("irrigation-kind");
+  await putRecords(db, "mapEntities", [head("drip-line", 8, 10, { id: "drip1", w: 8, d: 4, props: { zone: "2" } })]);
+  const deps = { db, today, gardener: null, latest: () => cache, act: async <T,>(fn: (c: ActionCtx) => Promise<T>) => fn(await ctx()) };
+  let cache = (await ctx()).data;
+  const out = await runTool("edit_map", { changes: [{ op: "update", id: "drip1", kind: "sprinkler-line", name: "", x: null, y: null, w: null, d: null, h: null, rot: null, link_planter_id: "", zone: "", radius: null, notes: "" }] }, deps);
+  assert.ok(!out.isError, out.text);
+  cache = (await ctx()).data;
+  const e = cache.mapEntities.find((m) => m.id === "drip1")!;
+  assert.deepEqual([e.kind, e.x, e.y, e.w, e.d, e.h, e.props.zone, e.props.spacing], ["sprinkler-line", 8, 10, 8, 4, 0.75, "2", 18]);
+  assert.deepEqual(irrigationZones(cache).find((z) => z.zone === "2")!.beds.map((b) => b.name), ["Bed 1"]);
+  await db.close();
+});
+
+test("a drip line covers only the part of a bed its span lies over; one with no span, the whole bed", () => {
+  // A long bed, 16 × 4 ft, and a drip line spanning its east half and the south 3 ft.
+  const long = head("raised-bed", 0, 0, { id: "long", w: 16, d: 4 });
+  const drip = head("drip-line", 8, 1, { w: 8, d: 3 });
+  assert.deepEqual(lineArea(drip, long), { a0: 8, a1: 16, c0: 1, c1: 4 });
+  assert.deepEqual(bedsWatered(drip, [long]).map((b) => b.id), ["long"]);
+  // Hanging past the bed's end: clipped to the bed.
+  assert.deepEqual(lineArea({ ...drip, x: 12 }, long), { a0: 12, a1: 16, c0: 1, c1: 4 });
+  // No span set (a thin line): the whole bed.
+  assert.deepEqual(lineArea({ ...drip, d: 0.2 }, long), { a0: 0, a1: 16, c0: 0, c1: 4 });
+  // A bed running north–south: along is its y, across its x.
+  const tall = head("raised-bed", 0, 0, { id: "tall", w: 4, d: 16 });
+  assert.deepEqual(lineArea(head("drip-line", 1, 8, { w: 3, d: 8 }), tall), { a0: 8, a1: 16, c0: 1, c1: 4 });
 });

@@ -6,7 +6,7 @@
 import type { ReactNode } from "react";
 import type { GardenData } from "../types.ts";
 import { bedPlants } from "./bedPlants.ts";
-import { bedsWatered } from "../irrigation.ts";
+import { bedsWatered, lineArea, sprayRadius, sprinklerHeads } from "../irrigation.ts";
 import { boxFaces, entityProjector, lineEnds, orderFaces, pathOf, roundedRect, turn, type Face, type Projector, type Vec3 } from "./geometry.ts";
 import { treeTrunk } from "./kinds.ts";
 import type { MapEntity, Opening } from "./model.ts";
@@ -110,6 +110,8 @@ export type DrawCtx = {
   selectedOpening?: string | null;
   /** The view's projector before the entity's turn, for drawing things on other entities (a drip line on its bed). */
   plain?: Projector;
+  /** Sprinklers, sprinkler lines and drip lines running right now: they spray (or drip). */
+  spraying?: Set<string>;
 };
 
 const ink = { stroke: PAL.ink, strokeWidth: 1, vectorEffect: "non-scaling-stroke" as const, strokeLinejoin: "round" as const };
@@ -408,6 +410,7 @@ function Sprinkler(e: MapEntity, ctx: DrawCtx) {
     <>
       <path d={pathOf(pj, ring)} fill={PAL.water} fillOpacity={0.18} stroke={PAL.water} strokeDasharray="5 4" strokeWidth={1} vectorEffect="non-scaling-stroke" />
       {Pin(e, ctx, "💦", { top: "#2f4f2f", sideX: "#1f3a1f", sideY: "#2f4f2f" })}
+      {ctx.spraying?.has(e.id) && spray(pj, "spray", cx, cy, e.z + e.h + 0.1, 0, r, { jets: 16, rise: Math.min(2.5, r * 0.25) })}
     </>
   );
 }
@@ -439,14 +442,9 @@ function DripLine(e: MapEntity, ctx: DrawCtx) {
   const plain = ctx.plain ?? pj;
   const beds = dripBeds(e, data);
   const [a, b] = lineEnds(e);
+  const dripping = ctx.spraying?.has(e.id) ? "dripping" : undefined;
   // The tubing itself: up on a bed's top where it crosses one.
-  const onTop = (x: number, y: number) => {
-    const over = beds.find(({ bed }) => {
-      const [dx, dy] = turn(x - (bed.x + bed.w / 2), y - (bed.y + bed.d / 2), -(bed.rot ?? 0));
-      return Math.abs(dx) <= bed.w / 2 && Math.abs(dy) <= bed.d / 2;
-    });
-    return over ? over.bed.z + over.bed.h + 0.04 : e.z + 0.05;
-  };
+  const onTop = (x: number, y: number) => groundAt(beds.map((x) => x.bed), x, y, e.z) + 0.04;
   const tube = Array.from({ length: 25 }, (_, i) => {
     const t = i / 24;
     const x = a[0] + (b[0] - a[0]) * t;
@@ -459,27 +457,37 @@ function DripLine(e: MapEntity, ctx: DrawCtx) {
     const bp = entityProjector(plain, bed);
     const z = bed.z + bed.h + 0.04;
     const inset = 0.25;
+    // Only the part of the bed the line's span covers (all of it for a line with no span).
+    const area = lineArea(e, bed);
+    const [a0, a1] = [Math.max(area.a0, inset), Math.min(area.a1, length - inset)];
+    const [c0, c1] = [Math.max(area.c0, inset), Math.min(area.c1, width - inset)];
+    if (a1 - a0 < 0.2 || c1 - c0 < 0.05) continue;
     // A point in the bed by how far along its length and across its width.
     const at = (along: number, across: number) => (alongX ? bp.p(bed.x + along, bed.y + across, z) : bp.p(bed.x + across, bed.y + along, z));
-    // The header goes across the end of the bed nearest where the tubing starts.
-    const [s0, s1] = [at(inset, width / 2), at(length - inset, width / 2)];
+    // The header goes across the end of the area nearest where the tubing starts.
+    const [s0, s1] = [at(a0, (c0 + c1) / 2), at(a1, (c0 + c1) / 2)];
     const [ax, ay] = plain.p(a[0], a[1], z);
-    const headerAt = Math.hypot(s0[0] - ax, s0[1] - ay) <= Math.hypot(s1[0] - ax, s1[1] - ay) ? inset : length - inset;
-    const far = headerAt === inset ? length - inset : inset;
-    // Like drip tape, each lateral runs just beside its row of plants rather than over them.
+    const headerAt = Math.hypot(s0[0] - ax, s0[1] - ay) <= Math.hypot(s1[0] - ax, s1[1] - ay) ? a0 : a1;
+    const far = headerAt === a0 ? a1 : a0;
+    // Like drip tape, each lateral runs just beside its row of plants rather than over them: the bed's rows within the area,
+    // or, where none fall in it, laterals spread evenly across it.
     const gap = (width - inset * 2) / rows;
-    const across = Array.from({ length: rows }, (_, i) => inset + (i + 0.5) * gap + gap * 0.28);
+    const inRows = Array.from({ length: rows }, (_, i) => inset + (i + 0.5) * gap).filter((r) => r >= c0 && r <= c1).map((r) => Math.min(c1, r + gap * 0.28));
+    const spread = Math.max(1, Math.round((c1 - c0) / 1.25));
+    const across = inRows.length ? inRows : Array.from({ length: spread }, (_, i) => c0 + ((i + 0.5) * (c1 - c0)) / spread);
     const h0 = at(headerAt, across[0]);
     const h1 = at(headerAt, across.at(-1)!);
     parts.push(<line key={`${bed.id}-h`} x1={h0[0]} y1={h0[1]} x2={h1[0]} y2={h1[1]} stroke={DRIP} strokeWidth={3} strokeLinecap="round" vectorEffect="non-scaling-stroke" />);
     parts.push(<line key={`${bed.id}-hh`} x1={h0[0]} y1={h0[1]} x2={h1[0]} y2={h1[1]} {...hit} />);
+    const run = Math.abs(far - headerAt);
+    const dir = far > headerAt ? 1 : -1;
     across.forEach((c, i) => {
       const [p0, p1] = [at(headerAt, c), at(far, c)];
       parts.push(<line key={`${bed.id}-l${i}`} x1={p0[0]} y1={p0[1]} x2={p1[0]} y2={p1[1]} stroke={DRIP} strokeWidth={1.75} strokeLinecap="round" vectorEffect="non-scaling-stroke" />);
       // An emitter every foot, dripping.
-      for (let f = 0.5; f < length - inset * 2; f += 1) {
-        const [qx, qy] = at(headerAt === inset ? inset + f : length - inset - f, c);
-        parts.push(<circle key={`${bed.id}-e${i}-${f}`} cx={qx} cy={qy} r={0.11} fill={PAL.water} stroke={DRIP} strokeWidth={0.04} />);
+      for (let f = 0.5; f < run; f += 1) {
+        const [qx, qy] = at(headerAt + dir * f, c);
+        parts.push(<circle key={`${bed.id}-e${i}-${f}`} className={dripping} style={dripping && { animationDelay: `-${((i * 7 + f * 3) % 10) / 10}s` }} cx={qx} cy={qy} r={0.11} fill={PAL.water} stroke={DRIP} strokeWidth={0.04} />);
       }
     });
   }
@@ -490,7 +498,7 @@ function DripLine(e: MapEntity, ctx: DrawCtx) {
     : Array.from({ length: Math.floor(len) }, (_, i) => {
         const t = (i + 0.5) / len;
         const [x, y] = plain.p(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, e.z + 0.05);
-        return <circle key={i} cx={x} cy={y} r={0.13} fill={PAL.water} />;
+        return <circle key={i} className={dripping} style={dripping && { animationDelay: `-${(i % 10) / 10}s` }} cx={x} cy={y} r={0.13} fill={PAL.water} />;
       });
   return (
     <>
@@ -498,6 +506,83 @@ function DripLine(e: MapEntity, ctx: DrawCtx) {
       {emitters}
       {parts}
       <path d={tubePath} {...hit} />
+    </>
+  );
+}
+
+/** The top of whatever's under a point: a bed's soil where the point is over one of these beds, else the ground (at `base`). */
+function groundAt(beds: MapEntity[], x: number, y: number, base = 0): number {
+  const over = beds.find((bed) => {
+    const [dx, dy] = turn(x - (bed.x + bed.w / 2), y - (bed.y + bed.d / 2), -(bed.rot ?? 0));
+    return Math.abs(dx) <= bed.w / 2 && Math.abs(dy) <= bed.d / 2;
+  });
+  return over ? over.z + over.h : base;
+}
+
+/**
+ * A sprinkler head's spray: jets arcing out from the nozzle in every
+ * direction to `r` feet, drawn as moving dashes so the water flows, over a
+ * mist of the ground it wets.
+ */
+function spray(pj: Projector, key: string, x: number, y: number, nozzle: number, ground: number, r: number, opts: { jets?: number; rise?: number } = {}): ReactNode {
+  const jets = opts.jets ?? 12;
+  const rise = opts.rise ?? Math.min(1.2, r * 0.25);
+  const mist = Array.from({ length: 28 }, (_, i) => {
+    const a = (i / 28) * Math.PI * 2;
+    return pj.p(x + Math.cos(a) * r, y + Math.sin(a) * r, ground + 0.03);
+  });
+  const paths = Array.from({ length: jets }, (_, j) => {
+    const a = ((j + 0.5) / jets) * Math.PI * 2;
+    const pts = Array.from({ length: 9 }, (_, i) => {
+      const s = i / 8;
+      return pj.p(x + Math.cos(a) * r * s, y + Math.sin(a) * r * s, ground + (nozzle - ground) * (1 - s) + 4 * rise * s * (1 - s));
+    });
+    const d = pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(3)} ${py.toFixed(3)}`).join(" ");
+    return <path key={j} className="spray-jet" pathLength={10} d={d} style={{ animationDelay: `-${((j * 0.13) % 0.5).toFixed(2)}s` }} />;
+  });
+  return (
+    <g key={key} className="spray" pointerEvents="none">
+      <path d={mist.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(3)} ${py.toFixed(3)}`).join(" ") + " Z"} fill={PAL.water} fillOpacity={0.16} />
+      {paths}
+    </g>
+  );
+}
+
+const HOSE = "#1f6b55";
+
+/**
+ * A sprinkler line: a garden hose with a small sprinkler on a stake every so
+ * often (18 in by default), up on a bed where it runs over one. When it's
+ * running, every head sprays a circle, tuned to reach the line's span.
+ */
+function SprinklerLine(e: MapEntity, ctx: DrawCtx) {
+  const { pj, data } = ctx;
+  const plain = ctx.plain ?? pj;
+  const beds = bedsWatered(e, data.mapEntities);
+  const [a, b] = lineEnds(e);
+  const hose = Array.from({ length: 25 }, (_, i) => {
+    const t = i / 24;
+    const x = a[0] + (b[0] - a[0]) * t;
+    const y = a[1] + (b[1] - a[1]) * t;
+    return plain.p(x, y, groundAt(beds, x, y, e.z) + 0.06);
+  });
+  const hosePath = hose.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(3)} ${y.toFixed(3)}`).join(" ");
+  const running = ctx.spraying?.has(e.id);
+  const r = sprayRadius(e);
+  const heads = sprinklerHeads(e).map(([x, y], i) => {
+    const ground = groundAt(beds, x, y, e.z);
+    const top = ground + Math.max(0.3, e.h);
+    const [gx, gy] = plain.p(x, y, ground);
+    const [tx, ty] = plain.p(x, y, top);
+    return { key: `h${i}`, x, y, ground, top, stake: <line key={`s${i}`} x1={gx} y1={gy} x2={tx} y2={ty} stroke="#5d646b" strokeWidth={2.5} strokeLinecap="round" vectorEffect="non-scaling-stroke" />, cap: <circle key={`c${i}`} cx={tx} cy={ty} r={0.13} fill="#e8c02a" stroke={PAL.ink} strokeWidth={0.04} /> };
+  });
+  return (
+    <>
+      <path d={hosePath} stroke={HOSE} strokeWidth={3.5} strokeLinecap="round" strokeLinejoin="round" fill="none" vectorEffect="non-scaling-stroke" />
+      {heads.map((h) => h.stake)}
+      {heads.map((h) => h.cap)}
+      {running && heads.map((h) => spray(plain, h.key, h.x, h.y, h.top + 0.05, h.ground, r, { jets: 10 }))}
+      <path d={hosePath} {...hit} />
     </>
   );
 }
@@ -659,6 +744,7 @@ export const DRAWERS: Record<string, Drawer> = {
   valve: (e, ctx) => Pin(e, ctx, "🔧", { top: "#2f4f2f", sideX: "#1f3a1f", sideY: "#2f4f2f" }),
   sprinkler: Sprinkler,
   "drip-line": DripLine,
+  "sprinkler-line": SprinklerLine,
   gantry: Gantry,
   "robot-dock": (e, ctx) => Pin(e, ctx, "🔋"),
   sensor: (e, ctx) => Pin(e, ctx, "📡"),

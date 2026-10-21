@@ -34,6 +34,8 @@ export type ZoneTimer = {
   days: number[];
   /** Start time, HH:MM on a 24-hour clock, in the garden's time zone. */
   at: string;
+  /** How long it runs, in minutes (20 when not set). */
+  minutes?: number;
   /** The day the timer was set; runs are recorded from then on. */
   since: string;
   /** Turned off for now (winter, a wet spell) without losing the schedule. */

@@ -17,6 +17,7 @@
 // Z. Every element is placed at its footprint's center, turned, and its shapes
 // are worked out in that frame, as if it weren't turned.
 
+import { sprinklerHeads } from "../irrigation.ts";
 import type { GardenData } from "../types.ts";
 import { bedPlants, type BedPlant } from "./bedPlants.ts";
 import { compassPoint, roundedRect, turn, type Vec2 } from "./geometry.ts";
@@ -306,6 +307,7 @@ const CLASSES: Record<string, IfcClass> = {
   "ac-unit": typed("IFCUNITARYEQUIPMENT", "SPLITSYSTEM"),
   "rain-barrel": typed("IFCTANK", "STORAGE"),
   "drip-line": typed("IFCPIPESEGMENT", "FLEXIBLESEGMENT"),
+  "sprinkler-line": typed("IFCPIPESEGMENT", "FLEXIBLESEGMENT"),
   sensor: typed("IFCSENSOR", "NOTDEFINED"),
 };
 const PROXY: IfcClass = typed("IFCBUILDINGELEMENTPROXY");
@@ -475,6 +477,19 @@ const SHAPES: Record<string, Shapes> = {
   "drip-line": (w, e) => {
     const alongX = e.w >= e.d;
     return [alongX ? w.box(-e.w / 2, -0.03, e.w / 2, 0.03, e.z, e.z + 0.06, { hex: "#222222" }) : w.box(-0.03, -e.d / 2, 0.03, e.d / 2, e.z, e.z + 0.06, { hex: "#222222" })];
+  },
+  "sprinkler-line": (w, e) => {
+    // The hose along the middle, and a stake with a yellow head every so often.
+    const alongX = e.w >= e.d;
+    const [cx, cy] = [e.x + e.w / 2, e.y + e.d / 2];
+    const hose = alongX ? w.box(-e.w / 2, -0.04, e.w / 2, 0.04, e.z, e.z + 0.08, { hex: "#1f6b55" }) : w.box(-0.04, -e.d / 2, 0.04, e.d / 2, e.z, e.z + 0.08, { hex: "#1f6b55" });
+    return [
+      hose,
+      ...sprinklerHeads(e).flatMap(([x, y]) => {
+        const [lx, ly] = turn(x - cx, y - cy, -(e.rot ?? 0));
+        return [w.box(lx - 0.05, ly - 0.05, lx + 0.05, ly + 0.05, e.z, e.z + e.h, C.metal), w.cylinder(lx, ly, 0.08, e.z + e.h, e.z + e.h + 0.06, { hex: "#e8c02a" })];
+      }),
+    ];
   },
   gantry,
   "robot-dock": solid(C.metal),
