@@ -139,11 +139,18 @@ A kind can also say:
 All of it can be turned off with the 🐦 box in the clock, and it stays still for people who prefer reduced motion.
 
 - **Trees and shrubs sway** from the bottom of the canopy, each at its own pace. It's a CSS animation whose `--sway` grows with rain and wind.
-- **Visitors** (`src/lib/map/wildlife.ts` decides who comes and where; `src/components/Critters.tsx` runs the motion in its own animation-frame loop, re-rendering only itself):
+- **Visitors** (`src/lib/map/wildlife.ts` decides who comes and where; `src/components/Critters.tsx` runs the motion in its own animation-frame loop, re-rendering only itself; the drawings are in `src/components/CritterSprites.tsx`):
   - **Songbirds** (cardinals, jays, sparrows, goldfinches, robins, chickadees) fly in to perch in trees, shrubs and hedges and on fence tops. They hop about, sometimes move to another tree, then leave. There are more by day and fewer in rain.
   - **Butterflies** come to beds with flowering plants, and **hummingbirds** to tubular flowers. The plants are matched by name in the seed library (`BUTTERFLY_PLANTS`, `HUMMINGBIRD_PLANTS`), or by a seed library category of "flower". This is the start of making plant choices show up as visitors.
   - **Cats** (Mochi, Pepper, Marmalade, Tux, Calico, Smokey, Biscuit, Snowball) wander in now and then from the nearest edge. Each sits on open ground with a swishing tail and the odd blink, then wanders off. They stay in when it's wet.
-- To add a visitor or make a plant attract one, add to `VISITORS` and `attractors()`, and give it a sprite in `Critters.tsx`.
+  - **Squirrels** (gray and fox) come by day. They forage under trees in short dashes, sit up now and then, and run up a trunk into the canopy (`climbTrees`: trees and fruit trees with at least 2 ft of clear trunk, not shrubs). After a while up a tree they come down to forage some more, or leave.
+- **Your dog** (`src/lib/map/pets.ts`). The garden's pets are kept with the garden (`garden.pets`, so they travel in the garden file) and added in the map's *Pets* panel: a name and a coat (red or blue heeler, black, yellow, golden, chocolate and more, in `DOG_COATS`). A dog lives in the house and comes out the back door (`backDoor`: the house door nearest the patio, else one on the plan-top wall). No house, no dog.
+  - It comes out for a look around every few minutes, and sooner when a cat or squirrel is in the yard (about 15 s on average).
+  - Out in the yard it spots cats and squirrels on the ground within a second or two (a few seconds when lying down) and gives chase. Once it's within 14 ft, a cat bolts for the fence, and a squirrel makes for the nearest tree within 35 ft and goes up it (or over the fence if there's none). The dog runs them to the fence or to the trunk, barks ("Woof!"), and goes on.
+  - Between chases it makes the rounds: one to three spots of open ground near the door (`patrolSpot`), sniffing at each.
+  - Then, if it's nice out (`niceOut`: sunny, with the sun at least 8° up), it lies on the patio for a few minutes, and gets up and goes in if the weather turns. Otherwise it goes straight back in.
+  - In real life it might be 10–20 outings a day. The map runs on the real clock, so it's sped up to a few an hour, and the cats, squirrels and birds come more often than they would too, so there's something to watch.
+- To add a visitor or make a plant attract one, add to `VISITORS` and `attractors()`, and give it a sprite in `CritterSprites.tsx`.
 
 ## 3D model (IFC)
 

@@ -4,7 +4,8 @@
 //
 // Today: songbirds perch in trees, shrubs, hedges and on fence tops;
 // butterflies and hummingbirds come to beds with flowering plants (matched by
-// name in the seed library); cats find open ground. To make a plant attract
+// name in the seed library); cats find open ground; squirrels forage under
+// trees and run up them. The household's own dog lives in pets.ts. To make a plant attract
 // someone, add it to the lists below, or give its seed library entry a
 // category of "flower".
 
@@ -14,7 +15,7 @@ import type { MapEntity } from "./model.ts";
 import type { Sky } from "../weather/forecast.ts";
 import type { GardenData } from "../types.ts";
 
-export type VisitorKind = "songbird" | "hummingbird" | "butterfly" | "cat";
+export type VisitorKind = "songbird" | "hummingbird" | "butterfly" | "cat" | "squirrel";
 
 export type VisitorDef = {
   label: string;
@@ -33,6 +34,7 @@ export const VISITORS: Record<VisitorKind, VisitorDef> = {
   hummingbird: { label: "Hummingbird", max: 1, rate: 0.04, minSun: 5, skies: ["sun", "cloud"] },
   butterfly: { label: "Butterfly", max: 3, rate: 0.08, minSun: 12, skies: ["sun", "cloud"] },
   cat: { label: "Cat", max: 2, rate: 0.012, minSun: -90, skies: ["sun", "cloud"] },
+  squirrel: { label: "Squirrel", max: 2, rate: 0.02, minSun: 0, skies: ["sun", "cloud"] },
 };
 
 /** Fewer songbirds out in rain and snow. */
@@ -122,6 +124,30 @@ export function attractors(entities: MapEntity[], data: GardenData): Attractor[]
   return out;
 }
 
+/** A tree a squirrel can run up: where its trunk stands, and how high its canopy is. */
+export type ClimbTree = { entityId: string; x: number; y: number; trunk: number; crown: number; spread: number };
+
+/** Trees with a clear trunk to climb (shrubs and hedges are too low and thick). */
+export function climbTrees(entities: MapEntity[]): ClimbTree[] {
+  return entities
+    .filter((e) => (e.kind === "tree" || e.kind === "fruit-tree") && treeTrunk(e) >= 2)
+    .map((e) => {
+      const trunk = treeTrunk(e);
+      return { entityId: e.id, x: e.x + e.w / 2, y: e.y + e.d / 2, trunk, crown: e.z + trunk + (e.h - trunk) * 0.35, spread: Math.min(e.w, e.d) / 2 };
+    });
+}
+
+/** The nearest tree to (x, y) within `max` feet. */
+export function nearestTree(trees: ClimbTree[], x: number, y: number, max = Infinity): ClimbTree | null {
+  let best: ClimbTree | null = null;
+  let bestD = max;
+  for (const t of trees) {
+    const d = Math.hypot(t.x - x, t.y - y);
+    if (d <= bestD) [best, bestD] = [t, d];
+  }
+  return best;
+}
+
 /** Picks an attractor for a visitor, weighted. */
 export function pickAttractor(list: Attractor[], visitor: Attractor["visitor"], rand: () => number, exclude?: string): Attractor | null {
   const options = list.filter((a) => a.visitor === visitor && a.entityId !== exclude);
@@ -177,6 +203,12 @@ export const BIRDS = [
   { name: "Goldfinch", body: "#e3b505", wing: "#2b2b2b", breast: "#f2d24a" },
   { name: "Robin", body: "#6b6a6a", wing: "#4e4d4d", breast: "#d9733a" },
   { name: "Chickadee", body: "#9aa0a6", wing: "#6f757b", breast: "#efe9df" },
+];
+
+/** Squirrel coats: body, belly, tail. */
+export const SQUIRRELS = [
+  { name: "Gray squirrel", body: "#8d8f93", belly: "#ebe6dd", tail: "#a7a9ad" },
+  { name: "Fox squirrel", body: "#a8683a", belly: "#e7b98c", tail: "#c58a55" },
 ];
 
 export const BUTTERFLIES = [
