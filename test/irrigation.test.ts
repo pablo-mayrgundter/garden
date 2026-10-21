@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { recordRain, setZone, setZoneRun, type ActionCtx } from "../src/lib/actions.ts";
 import { runTool } from "../src/lib/assistant/core.ts";
 import { plantingViews } from "../src/lib/garden.ts";
-import { bedsWatered, describeTimer, irrigationFor, irrigationZones, nextRun, sprayRadius, sprinklerHeads, timerRunsDue, zoneFor, zonesRunning } from "../src/lib/irrigation.ts";
+import { bedsWatered, describeTimer, irrigationFor, irrigationZones, lineArea, nextRun, sprayRadius, sprinklerHeads, timerRunsDue, zoneFor, zonesRunning } from "../src/lib/irrigation.ts";
 import { lineEnds, lineFromEnds } from "../src/lib/map/geometry.ts";
 import { kindDef } from "../src/lib/map/kinds.ts";
 import type { MapEntity } from "../src/lib/map/model.ts";
@@ -267,4 +267,19 @@ test("the assistant turns a drip line into a sprinkler line in place", async () 
   assert.deepEqual([e.kind, e.x, e.y, e.w, e.d, e.h, e.props.zone, e.props.spacing], ["sprinkler-line", 8, 10, 8, 4, 0.75, "2", 18]);
   assert.deepEqual(irrigationZones(cache).find((z) => z.zone === "2")!.beds.map((b) => b.name), ["Bed 1"]);
   await db.close();
+});
+
+test("a drip line covers only the part of a bed its span lies over; one with no span, the whole bed", () => {
+  // A long bed, 16 × 4 ft, and a drip line spanning its east half and the south 3 ft.
+  const long = head("raised-bed", 0, 0, { id: "long", w: 16, d: 4 });
+  const drip = head("drip-line", 8, 1, { w: 8, d: 3 });
+  assert.deepEqual(lineArea(drip, long), { a0: 8, a1: 16, c0: 1, c1: 4 });
+  assert.deepEqual(bedsWatered(drip, [long]).map((b) => b.id), ["long"]);
+  // Hanging past the bed's end: clipped to the bed.
+  assert.deepEqual(lineArea({ ...drip, x: 12 }, long), { a0: 12, a1: 16, c0: 1, c1: 4 });
+  // No span set (a thin line): the whole bed.
+  assert.deepEqual(lineArea({ ...drip, d: 0.2 }, long), { a0: 0, a1: 16, c0: 0, c1: 4 });
+  // A bed running north–south: along is its y, across its x.
+  const tall = head("raised-bed", 0, 0, { id: "tall", w: 4, d: 16 });
+  assert.deepEqual(lineArea(head("drip-line", 1, 8, { w: 3, d: 8 }), tall), { a0: 8, a1: 16, c0: 1, c1: 4 });
 });

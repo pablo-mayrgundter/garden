@@ -118,6 +118,34 @@ export function bedsWatered(head: MapEntity, entities: MapEntity[]): MapEntity[]
   return [];
 }
 
+/** A line narrower than this hasn't had its span set: it covers the whole of a bed it runs over. */
+const NO_SPAN = 1;
+
+/**
+ * The part of a bed a drip line or sprinkler line covers, in the bed's own
+ * terms: from `a0` to `a1` feet along its length and `c0` to `c1` across its
+ * width. That's where the line's span (its rectangle) lies over the bed; a
+ * line with no span set covers the whole bed.
+ */
+export function lineArea(line: MapEntity, bed: MapEntity): { a0: number; a1: number; c0: number; c1: number } {
+  const alongX = bed.w >= bed.d;
+  const [length, width] = alongX ? [bed.w, bed.d] : [bed.d, bed.w];
+  if (Math.min(line.w, line.d) < NO_SPAN) return { a0: 0, a1: length, c0: 0, c1: width };
+  // The line's corners in the bed's own frame (from its north-west corner, unturned).
+  const corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([fx, fy]) => {
+    const [x, y] = toLot(line, line.x + fx * line.w, line.y + fy * line.d);
+    const [dx, dy] = turn(x - (bed.x + bed.w / 2), y - (bed.y + bed.d / 2), -(bed.rot ?? 0));
+    return alongX ? [dx + bed.w / 2, dy + bed.d / 2] : [dy + bed.d / 2, dx + bed.w / 2];
+  });
+  const clamp = (v: number, max: number) => Math.max(0, Math.min(max, v));
+  return {
+    a0: clamp(Math.min(...corners.map((c) => c[0])), length),
+    a1: clamp(Math.max(...corners.map((c) => c[0])), length),
+    c0: clamp(Math.min(...corners.map((c) => c[1])), width),
+    c1: clamp(Math.max(...corners.map((c) => c[1])), width),
+  };
+}
+
 /** The irrigation zones on the map, each with what it waters and its settings. */
 export function irrigationZones(data: Pick<GardenData, "mapEntities" | "garden">): Zone[] {
   const byZone = new Map<string, MapEntity[]>();

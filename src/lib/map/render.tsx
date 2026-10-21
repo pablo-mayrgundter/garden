@@ -6,7 +6,7 @@
 import type { ReactNode } from "react";
 import type { GardenData } from "../types.ts";
 import { bedPlants } from "./bedPlants.ts";
-import { bedsWatered, sprayRadius, sprinklerHeads } from "../irrigation.ts";
+import { bedsWatered, lineArea, sprayRadius, sprinklerHeads } from "../irrigation.ts";
 import { boxFaces, entityProjector, lineEnds, orderFaces, pathOf, roundedRect, turn, type Face, type Projector, type Vec3 } from "./geometry.ts";
 import { treeTrunk } from "./kinds.ts";
 import type { MapEntity, Opening } from "./model.ts";
@@ -457,26 +457,36 @@ function DripLine(e: MapEntity, ctx: DrawCtx) {
     const bp = entityProjector(plain, bed);
     const z = bed.z + bed.h + 0.04;
     const inset = 0.25;
+    // Only the part of the bed the line's span covers (all of it for a line with no span).
+    const area = lineArea(e, bed);
+    const [a0, a1] = [Math.max(area.a0, inset), Math.min(area.a1, length - inset)];
+    const [c0, c1] = [Math.max(area.c0, inset), Math.min(area.c1, width - inset)];
+    if (a1 - a0 < 0.2 || c1 - c0 < 0.05) continue;
     // A point in the bed by how far along its length and across its width.
     const at = (along: number, across: number) => (alongX ? bp.p(bed.x + along, bed.y + across, z) : bp.p(bed.x + across, bed.y + along, z));
-    // The header goes across the end of the bed nearest where the tubing starts.
-    const [s0, s1] = [at(inset, width / 2), at(length - inset, width / 2)];
+    // The header goes across the end of the area nearest where the tubing starts.
+    const [s0, s1] = [at(a0, (c0 + c1) / 2), at(a1, (c0 + c1) / 2)];
     const [ax, ay] = plain.p(a[0], a[1], z);
-    const headerAt = Math.hypot(s0[0] - ax, s0[1] - ay) <= Math.hypot(s1[0] - ax, s1[1] - ay) ? inset : length - inset;
-    const far = headerAt === inset ? length - inset : inset;
-    // Like drip tape, each lateral runs just beside its row of plants rather than over them.
+    const headerAt = Math.hypot(s0[0] - ax, s0[1] - ay) <= Math.hypot(s1[0] - ax, s1[1] - ay) ? a0 : a1;
+    const far = headerAt === a0 ? a1 : a0;
+    // Like drip tape, each lateral runs just beside its row of plants rather than over them: the bed's rows within the area,
+    // or, where none fall in it, laterals spread evenly across it.
     const gap = (width - inset * 2) / rows;
-    const across = Array.from({ length: rows }, (_, i) => inset + (i + 0.5) * gap + gap * 0.28);
+    const inRows = Array.from({ length: rows }, (_, i) => inset + (i + 0.5) * gap).filter((r) => r >= c0 && r <= c1).map((r) => Math.min(c1, r + gap * 0.28));
+    const spread = Math.max(1, Math.round((c1 - c0) / 1.25));
+    const across = inRows.length ? inRows : Array.from({ length: spread }, (_, i) => c0 + ((i + 0.5) * (c1 - c0)) / spread);
     const h0 = at(headerAt, across[0]);
     const h1 = at(headerAt, across.at(-1)!);
     parts.push(<line key={`${bed.id}-h`} x1={h0[0]} y1={h0[1]} x2={h1[0]} y2={h1[1]} stroke={DRIP} strokeWidth={3} strokeLinecap="round" vectorEffect="non-scaling-stroke" />);
     parts.push(<line key={`${bed.id}-hh`} x1={h0[0]} y1={h0[1]} x2={h1[0]} y2={h1[1]} {...hit} />);
+    const run = Math.abs(far - headerAt);
+    const dir = far > headerAt ? 1 : -1;
     across.forEach((c, i) => {
       const [p0, p1] = [at(headerAt, c), at(far, c)];
       parts.push(<line key={`${bed.id}-l${i}`} x1={p0[0]} y1={p0[1]} x2={p1[0]} y2={p1[1]} stroke={DRIP} strokeWidth={1.75} strokeLinecap="round" vectorEffect="non-scaling-stroke" />);
       // An emitter every foot, dripping.
-      for (let f = 0.5; f < length - inset * 2; f += 1) {
-        const [qx, qy] = at(headerAt === inset ? inset + f : length - inset - f, c);
+      for (let f = 0.5; f < run; f += 1) {
+        const [qx, qy] = at(headerAt + dir * f, c);
         parts.push(<circle key={`${bed.id}-e${i}-${f}`} className={dripping} style={dripping && { animationDelay: `-${((i * 7 + f * 3) % 10) / 10}s` }} cx={qx} cy={qy} r={0.11} fill={PAL.water} stroke={DRIP} strokeWidth={0.04} />);
       }
     });
